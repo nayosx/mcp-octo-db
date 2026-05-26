@@ -46,8 +46,8 @@ func textResult(text string) *mcp.CallToolResult {
 
 // ListTablesArgs contiene los argumentos para listar tablas
 type ListTablesArgs struct {
-	DBName string `json:"db_name" jsonschema:"name of the database to query (defaults to 'default')"`
-	Schema string `json:"schema" jsonschema:"schema to list tables from (for Postgres defaults to 'public', for MySQL/MariaDB defaults to database name)"`
+	DBName string `json:"db_name,omitempty" jsonschema:"name of the database to query (defaults to 'default')"`
+	Schema string `json:"schema,omitempty" jsonschema:"schema to list tables from (for Postgres defaults to 'public', for MySQL/MariaDB defaults to database name)"`
 }
 
 // ListTablesHandler maneja el listado de tablas
@@ -73,8 +73,8 @@ func ListTablesHandler(ctx context.Context, req *mcp.CallToolRequest, args ListT
 // DescribeTableArgs contiene los argumentos para describir una tabla
 type DescribeTableArgs struct {
 	TableName string `json:"table_name" jsonschema:"name of the table to describe"`
-	DBName    string `json:"db_name" jsonschema:"name of the database to query (defaults to 'default')"`
-	Schema    string `json:"schema" jsonschema:"schema of the table (for Postgres defaults to 'public', for MySQL/MariaDB defaults to database name)"`
+	DBName    string `json:"db_name,omitempty" jsonschema:"name of the database to query (defaults to 'default')"`
+	Schema    string `json:"schema,omitempty" jsonschema:"schema of the table (for Postgres defaults to 'public', for MySQL/MariaDB defaults to database name)"`
 }
 
 // DescribeTableHandler maneja la descripción del esquema de una tabla
@@ -117,7 +117,7 @@ func DescribeTableHandler(ctx context.Context, req *mcp.CallToolRequest, args De
 // ReadQueryArgs contiene los argumentos para ejecutar consultas de lectura
 type ReadQueryArgs struct {
 	SQL    string `json:"sql" jsonschema:"the read-only SELECT SQL query to execute"`
-	DBName string `json:"db_name" jsonschema:"name of the database to query (defaults to 'default')"`
+	DBName string `json:"db_name,omitempty" jsonschema:"name of the database to query (defaults to 'default')"`
 }
 
 // ReadQueryHandler ejecuta consultas SELECT de solo lectura
@@ -157,7 +157,7 @@ func ReadQueryHandler(ctx context.Context, req *mcp.CallToolRequest, args ReadQu
 // WriteQueryArgs contiene los argumentos para consultas de modificación
 type WriteQueryArgs struct {
 	SQL    string `json:"sql" jsonschema:"the write SQL query to execute (INSERT, UPDATE, DELETE, CREATE, ALTER, etc.)"`
-	DBName string `json:"db_name" jsonschema:"name of the database to query (defaults to 'default')"`
+	DBName string `json:"db_name,omitempty" jsonschema:"name of the database to query (defaults to 'default')"`
 }
 
 // WriteQueryHandler ejecuta consultas que modifican datos o esquema
