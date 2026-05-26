@@ -9,6 +9,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	_ "modernc.org/sqlite"
 )
 
 // ColumnInfo representa la información de una columna de una tabla
@@ -126,6 +127,17 @@ func NewDBClient(cfg DBConfig) (DBClient, error) {
 			return nil, fmt.Errorf("failed to ping mysql: %w", err)
 		}
 		return &MySQLClient{db: db}, nil
+
+	case "sqlite", "sqlite3":
+		db, err := sql.Open("sqlite", cfg.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open sqlite connection: %w", err)
+		}
+		if err := db.Ping(); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("failed to ping sqlite: %w", err)
+		}
+		return &SQLiteClient{db: db}, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported database type: %s", cfg.Type)
@@ -349,6 +361,106 @@ func (c *MySQLClient) ExecuteReadOnlyQuery(ctx context.Context, query string) ([
 }
 
 func (c *MySQLClient) ExecuteWrite(ctx context.Context, query string) (int64, error) {
+	res, err := c.db.ExecContext(ctx, query)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// ==========================================
+// CLIENTE SQLITE
+// ==========================================
+
+type SQLiteClient struct {
+	db *sql.DB
+}
+
+func (c *SQLiteClient) Close() error {
+	return c.db.Close()
+}
+
+func (c *SQLiteClient) ListTables(ctx context.Context, schema string) ([]string, error) {
+	query := `
+		SELECT name 
+		FROM sqlite_master 
+		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+		ORDER BY name;`
+	
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			return nil, err
+		}
+		tables = append(tables, table)
+	}
+	return tables, nil
+}
+
+func (c *SQLiteClient) DescribeTable(ctx context.Context, schema, table string) ([]ColumnInfo, error) {
+	escapedTable := strings.ReplaceAll(table, "\"", "\"\"")
+	query := fmt.Sprintf("PRAGMA table_info(\"%s\")", escapedTable)
+
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var columns []ColumnInfo
+	for rows.Next() {
+		var cid int
+		var col ColumnInfo
+		var notNull int
+		var dfltVal sql.NullString
+		var pk int
+		
+		if err := rows.Scan(&cid, &col.Name, &col.Type, &notNull, &dfltVal, &pk); err != nil {
+			return nil, err
+		}
+		
+		col.Nullable = notNull == 0
+		col.PrimaryKey = pk > 0
+		if dfltVal.Valid {
+			col.Default = &dfltVal.String
+		}
+		columns = append(columns, col)
+	}
+	return columns, nil
+}
+
+func (c *SQLiteClient) ExecuteQuery(ctx context.Context, query string) ([]map[string]any, error) {
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanRows(rows)
+}
+
+func (c *SQLiteClient) ExecuteReadOnlyQuery(ctx context.Context, query string) ([]map[string]any, error) {
+	tx, err := c.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return c.ExecuteQuery(ctx, query)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanRows(rows)
+}
+
+func (c *SQLiteClient) ExecuteWrite(ctx context.Context, query string) (int64, error) {
 	res, err := c.db.ExecContext(ctx, query)
 	if err != nil {
 		return 0, err

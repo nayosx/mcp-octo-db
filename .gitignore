@@ -20,3 +20,8 @@ mcp-octo-db
 
 # OS files
 .DS_Store
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3

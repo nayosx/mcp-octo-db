@@ -1,6 +1,6 @@
 # mcp-octo-db
 
-`mcp-octo-db` es un servidor del **Model Context Protocol (MCP)** desarrollado en Go. Permite conectar asistentes de Inteligencia Artificial (como Cursor, Claude Desktop, etc.) a múltiples bases de datos relacionales de forma simultánea, soportando indistintamente **PostgreSQL**, **MySQL** y **MariaDB**.
+`mcp-octo-db` es un servidor del **Model Context Protocol (MCP)** desarrollado en Go. Permite conectar asistentes de Inteligencia Artificial (como Cursor, Claude Desktop, etc.) a múltiples bases de datos relacionales de forma simultánea, soportando indistintamente **PostgreSQL**, **MySQL**, **MariaDB** y **SQLite**.
 
 El nombre `octo` (pulpo) hace referencia a su capacidad para extender tentáculos a diferentes motores y esquemas utilizando una configuración centralizada.
 
@@ -8,7 +8,7 @@ El nombre `octo` (pulpo) hace referencia a su capacidad para extender tentáculo
 
 ## Características
 
-- 🔌 **Soporte Multimotor:** Conéctate a bases de datos PostgreSQL, MySQL y MariaDB usando el mismo servidor.
+- 🔌 **Soporte Multimotor:** Conéctate a bases de datos PostgreSQL, MySQL, MariaDB y SQLite usando el mismo servidor.
 - 🗃️ **Multi-DB en Simultáneo:** Mapea múltiples bases de datos usando sufijos en las variables de entorno.
 - 🔒 **Consultas de Solo Lectura Protegidas:** La herramienta `read_query` restringe las consultas a operaciones `SELECT` y utiliza transacciones de solo lectura (`ReadOnly`) donde el motor lo soporte.
 - 🛠️ **Introspección Completa:** Herramientas dedicadas para listar tablas y describir detalladamente la estructura de columnas (tipos, nulabilidad, llaves primarias, valores por defecto).
@@ -85,6 +85,14 @@ DB_NAME_ANALYTICS=analyticsdb
 ```
 El servidor detectará de manera automática el sufijo y registrará la base de datos bajo el nombre `analytics` (en minúsculas).
 
+### Configurar Bases SQLite (Ej: `sqlite_test`):
+Para bases de datos SQLite, el campo `DB_NAME` representa la ruta al archivo `.db`. No se requieren campos de host, puerto, usuario o contraseña:
+```env
+DB_TYPE_SQLITE_TEST=sqlite
+DB_NAME_SQLITE_TEST=/home/ness/Development/go/mcp_octo_db/test.db
+```
+El servidor la registrará bajo el nombre `sqlite_test`.
+
 ---
 
 ## Integración con Clientes MCP
@@ -104,9 +112,9 @@ Edita el archivo de configuración `claude_desktop_config.json`:
 {
   "mcpServers": {
     "mcp-octo-db": {
-      "command": "/home/ness/Development/database/pg-local/mcp-octo-db",
+      "command": "/home/ness/Development/go/mcp_octo_db/mcp-octo-db",
       "args": [],
-      "cwd": "/home/ness/Development/database/pg-local"
+      "cwd": "/home/ness/Development/go/mcp_octo_db"
     }
   }
 }
@@ -117,8 +125,8 @@ En tu entorno de configuración de `antigravity`, añade el servidor MCP en tus 
 ```json
 "mcpServers": {
   "mcp-octo-db": {
-    "command": "/home/ness/Development/database/pg-local/mcp-octo-db",
-    "cwd": "/home/ness/Development/database/pg-local"
+    "command": "/home/ness/Development/go/mcp_octo_db/mcp-octo-db",
+    "cwd": "/home/ness/Development/go/mcp_octo_db"
   }
 }
 ```
@@ -127,16 +135,16 @@ En tu entorno de configuración de `antigravity`, añade el servidor MCP en tus 
 Para integraciones basadas en extensiones de VS Code o IDEs compatibles con Codex y OpenCode:
 1. Instala el plugin cliente MCP (ej. Cline, Roo Code, o el cliente nativo de Codex/OpenCode).
 2. Agrega una nueva configuración de servidor `mcp-octo-db`:
-   - **Command:** `/home/ness/Development/database/pg-local/mcp-octo-db`
-   - **Cwd:** `/home/ness/Development/database/pg-local`
+   - **Command:** `/home/ness/Development/go/mcp_octo_db/mcp-octo-db`
+   - **Cwd:** `/home/ness/Development/go/mcp_octo_db`
    - **Type:** `stdio` o `command`
 
 ### 4. Cursor
 Ve a **Settings > Features > MCP**, haz clic en **+ Add New MCP Server** y configúralo de la siguiente manera:
 - **Name:** `mcp-octo-db`
 - **Type:** `command`
-- **Command:** `/home/ness/Development/database/pg-local/mcp-octo-db`
-- **Cwd (opcional):** `/home/ness/Development/database/pg-local` (requerido para cargar el `.env` correctamente).
+- **Command:** `/home/ness/Development/go/mcp_octo_db/mcp-octo-db`
+- **Cwd (opcional):** `/home/ness/Development/go/mcp_octo_db` (requerido para cargar el `.env` correctamente).
 
 ---
 
