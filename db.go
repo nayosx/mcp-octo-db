@@ -24,6 +24,7 @@ type ColumnInfo struct {
 // DBClient define los métodos comunes para interactuar con Postgres y MySQL/MariaDB
 type DBClient interface {
 	ListTables(ctx context.Context, schema string) ([]string, error)
+	ListSchemas(ctx context.Context) ([]string, error)
 	DescribeTable(ctx context.Context, schema, table string) ([]ColumnInfo, error)
 	ExecuteQuery(ctx context.Context, query string) ([]map[string]any, error)
 	ExecuteReadOnlyQuery(ctx context.Context, query string) ([]map[string]any, error)
@@ -156,6 +157,30 @@ func (c *PostgresClient) Close() error {
 	return c.db.Close()
 }
 
+func (c *PostgresClient) ListSchemas(ctx context.Context) ([]string, error) {
+	query := `
+		SELECT schema_name 
+		FROM information_schema.schemata 
+		WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
+		ORDER BY schema_name;`
+	
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var schemas []string
+	for rows.Next() {
+		var schema string
+		if err := rows.Scan(&schema); err != nil {
+			return nil, err
+		}
+		schemas = append(schemas, schema)
+	}
+	return schemas, nil
+}
+
 func (c *PostgresClient) ListTables(ctx context.Context, schema string) ([]string, error) {
 	if schema == "" {
 		schema = "public"
@@ -276,6 +301,29 @@ func (c *MySQLClient) Close() error {
 	return c.db.Close()
 }
 
+func (c *MySQLClient) ListSchemas(ctx context.Context) ([]string, error) {
+	query := `
+		SELECT schema_name 
+		FROM information_schema.schemata 
+		ORDER BY schema_name;`
+	
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var schemas []string
+	for rows.Next() {
+		var schema string
+		if err := rows.Scan(&schema); err != nil {
+			return nil, err
+		}
+		schemas = append(schemas, schema)
+	}
+	return schemas, nil
+}
+
 func (c *MySQLClient) ListTables(ctx context.Context, schema string) ([]string, error) {
 	query := `
 		SELECT table_name 
@@ -378,6 +426,10 @@ type SQLiteClient struct {
 
 func (c *SQLiteClient) Close() error {
 	return c.db.Close()
+}
+
+func (c *SQLiteClient) ListSchemas(ctx context.Context) ([]string, error) {
+	return []string{"main"}, nil
 }
 
 func (c *SQLiteClient) ListTables(ctx context.Context, schema string) ([]string, error) {

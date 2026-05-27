@@ -1,0 +1,74 @@
+# config.yaml.example
+# Copy this file to config.yaml and update the settings for your project.
+#
+# To start the server using this configuration:
+#   ./mcp-octo-db --config config.yaml
+
+# 1. Database Connections
+# You can configure multiple databases of type postgres, mysql, or sqlite.
+databases:
+  # The 'default' database is used when no db_name parameter is passed to the tools.
+  default:
+    type: postgres
+    host: localhost
+    port: 5432
+    user: appuser
+    password: apppassword
+    name: appdb
+    sslmode: disable
+
+  # You can add additional databases with custom names (e.g., analytics)
+  analytics:
+    type: mysql
+    host: 127.0.0.1
+    port: 3306
+    user: analytics_user
+    password: analytics_password
+    name: analytics_db
+
+  # SQLite configuration only requires type and name (file path)
+  local_test:
+    type: sqlite
+    name: "/home/ness/Development/go/mcp_octo_db/test.db"
+
+# 2. Global Security and Execution Settings
+settings:
+  # Enable write operations (write_query). If false, only read-only queries are allowed.
+  # Default: false
+  enable_write: false
+
+  # Maximum number of rows returned in a single query.
+  # Default: 500
+  max_rows: 500
+
+  # Query timeout in seconds.
+  # Default: 10
+  query_timeout_seconds: 10
+
+  # Allowed Schemas (Optional). If specified, only schemas in this list can be queried.
+  # Empty list means no schema restrictions.
+  # For Postgres, "public" is recommended as a starting point.
+  allowed_schemas:
+    - public
+
+  # Allowed Tables (Optional). If specified, ONLY tables in this list can be queried.
+  # Empty list means all tables are allowed (unless they are in the denied_tables list).
+  allowed_tables: []
+
+  # Denied Tables (Optional). Tables in this list are strictly blocked from queries and metadata introspection.
+  denied_tables:
+    - users_passwords
+    - secrets
+    - credentials
+
+  # Log Level: info, debug, warn, error
+  # Default: info
+  log_level: info
+
+  # Log Format: text or json
+  # Default: text
+  log_format: text
+
+  # Audit Log: If true, prepends [AUDIT] to text logs or sets "audit: true" in JSON logs.
+  # Default: false
+  audit_log: false

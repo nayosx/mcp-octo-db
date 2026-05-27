@@ -1,18 +1,28 @@
-# mcp-octo-db
+# mcp-octo-db (Community Edition)
 
-`mcp-octo-db` es un servidor del **Model Context Protocol (MCP)** desarrollado en Go. Permite conectar asistentes de Inteligencia Artificial (como Cursor, Claude Desktop, etc.) a múltiples bases de datos relacionales de forma simultánea, soportando indistintamente **PostgreSQL**, **MySQL**, **MariaDB** y **SQLite**.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+`mcp-octo-db` es un servidor del **Model Context Protocol (MCP)** desarrollado en Go y distribuido bajo la licencia de código abierto MIT. Permite conectar asistentes de Inteligencia Artificial (como Cursor, Claude Desktop, etc.) a múltiples bases de datos relacionales locales o de prueba de forma simultánea, soportando indistintamente **PostgreSQL**, **MySQL**, **MariaDB** y **SQLite**.
 
 El nombre `octo` (pulpo) hace referencia a su capacidad para extender tentáculos a diferentes motores y esquemas utilizando una configuración centralizada.
 
+> [!NOTE]
+> **Posicionamiento de la Community Edition:**
+> Este repositorio público funciona como una herramienta y conector local de código abierto para desarrolladores. Está diseñado para simplificar la integración de IA en entornos locales y de prueba. Si tu organización requiere una capa de control de accesos centralizada, políticas de auditoría avanzadas (SIEM/Loki), enmascaramiento de datos sensibles (PII), flujos de aprobación humana (Approval Workflows) o despliegue multi-tenant, consulta la documentación sobre la versión Enterprise.
+
 ---
 
-## Características
+## Características (Community Edition)
 
 - 🔌 **Soporte Multimotor:** Conéctate a bases de datos PostgreSQL, MySQL, MariaDB y SQLite usando el mismo servidor.
-- 🗃️ **Multi-DB en Simultáneo:** Mapea múltiples bases de datos usando sufijos en las variables de entorno.
-- 🔒 **Consultas de Solo Lectura Protegidas:** La herramienta `read_query` restringe las consultas a operaciones `SELECT` y utiliza transacciones de solo lectura (`ReadOnly`) donde el motor lo soporte.
-- 🛠️ **Introspección Completa:** Herramientas dedicadas para listar tablas y describir detalladamente la estructura de columnas (tipos, nulabilidad, llaves primarias, valores por defecto).
-- ⚙️ **Configuración Portable:** Configurable completamente a través de un archivo `.env`.
+- 🗃️ **Multi-DB en Simultáneo:** Mapea múltiples bases de datos usando archivos YAML o variables de entorno.
+- 🛡️ **Seguridad por Defecto:**
+  - Modo de solo lectura por defecto (las escrituras se habilitan explícitamente con `enable_write: true`).
+  - Bloqueo de consultas destructivas/DML (como `DROP`, `DELETE`, `UPDATE`) en el canal de lectura y protección contra múltiples sentencias SQL en un mismo llamado.
+  - Soporte para reglas de exclusión/inclusión de tablas y esquemas (`allowed_schemas`, `allowed_tables`, `denied_tables`).
+  - Capping automático de filas (`max_rows`) y timeouts (`query_timeout_seconds`) para optimizar el consumo de tokens y recursos.
+- ⚙️ **Configuración Flexible y Diagnósticos:** Soporta archivos `.env` y archivos YAML con precedencia clara. Incluye el comando `doctor` para pruebas rápidas de conectividad local.
+- 🛠️ **Herramientas MCP Ampliadas:** Herramientas de introspección (`list_tables`, `describe_table`), consultas estructuradas (`read_query`, `write_query`), y nuevas utilidades de navegación (`list_schemas`, `search_tables`, `get_table_sample`, `explain_query`).
 
 ---
 
@@ -92,6 +102,50 @@ DB_TYPE_SQLITE_TEST=sqlite
 DB_NAME_SQLITE_TEST=/home/ness/Development/go/mcp_octo_db/test.db
 ```
 El servidor la registrará bajo el nombre `sqlite_test`.
+
+---
+
+## Configuración Avanzada (`config.yaml`)
+
+Además de las variables de entorno, puedes configurar el servidor usando un archivo de configuración YAML. Esto es ideal para gestionar de forma clara múltiples bases de datos y controles de seguridad (allowlists, denylists, límites de filas y timeouts).
+
+Crea un archivo `config.yaml` tomando como base el ejemplo provisto:
+```bash
+cp config.yaml.example config.yaml
+```
+
+El formato del archivo permite definir:
+- **databases**: Un listado de conexiones a bases de datos relacionales (`postgres`, `mysql`, `sqlite`).
+- **settings**:
+  - `enable_write`: Si está en `true`, habilita la herramienta `write_query` (por defecto `false` para mayor seguridad).
+  - `max_rows`: Límite máximo de filas devueltas en consultas (por defecto `500`).
+  - `query_timeout_seconds`: Tiempo límite de ejecución de consulta en segundos (por defecto `10`).
+  - `allowed_schemas`: Lista de esquemas permitidos (ej. `[public]`).
+  - `allowed_tables`: Lista de tablas permitidas (ej. `[users, products]`).
+  - `denied_tables`: Lista de tablas restringidas (ej. `[secrets, passwords]`).
+  - `log_format`: Formato de logs (`text` o `json` para logs estructurados).
+
+---
+
+## Banderas de CLI y Diagnóstico (`doctor`)
+
+El ejecutable `mcp-octo-db` admite banderas de configuración y subcomandos de diagnóstico:
+
+1. **Especificar archivo `.env`:**
+   ```bash
+   ./mcp-octo-db --env /ruta/a/mi/.env
+   ```
+
+2. **Especificar archivo `config.yaml`:**
+   ```bash
+   ./mcp-octo-db --config /ruta/a/mi/config.yaml
+   ```
+
+3. **Ejecutar Diagnóstico (`doctor`):**
+   Valida la conexión a todas las bases de datos y comprueba las políticas de seguridad activas sin exponer secretos:
+   ```bash
+   ./mcp-octo-db [--config config.yaml] [--env .env] doctor
+   ```
 
 ---
 
