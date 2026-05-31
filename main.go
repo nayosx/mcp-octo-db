@@ -52,7 +52,9 @@ func main() {
 		log.Printf("Connecting to database '%s' (%s at %s:%s)...", name, cfg.Type, cfg.Host, cfg.Port)
 		client, err := NewDBClient(cfg)
 		if err != nil {
-			log.Fatalf("\nFailed to connect to database '%s': %v\n", name, err)
+			dbConnErrors[name] = err
+			log.Printf(" WARNING: Failed to connect to database '%s': %v. The server will continue to start, but queries to this database will fail.\n", name, err)
+			continue
 		}
 		dbClients[name] = client
 		log.Println(" Connected successfully.")

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -197,4 +199,38 @@ settings:
 	if len(GlobalSettings.DeniedTables) != 1 || GlobalSettings.DeniedTables[0] != "secret_table" {
 		t.Errorf("Unexpected DeniedTables: %v", GlobalSettings.DeniedTables)
 	}
+}
+
+func TestConnectionFailureTolerance(t *testing.T) {
+	// 1. Guardar el estado anterior
+	originalDbClients := dbClients
+	originalDbConnErrors := dbConnErrors
+
+	// Limpiar / Setup mock data
+	dbClients = make(map[string]DBClient)
+	dbConnErrors = make(map[string]error)
+
+	// Mockear una base offline
+	mockError := fmt.Errorf("connection timeout on port 5432")
+	dbConnErrors["offline_db"] = mockError
+
+	// Intentar obtener el cliente
+	_, err := getClient("offline_db")
+	if err == nil {
+		t.Error("Expected error for offline_db, but got nil")
+	} else if !strings.Contains(err.Error(), "offline") || !strings.Contains(err.Error(), "connection timeout") {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+
+	// Intentar obtener una base inexistente
+	_, err = getClient("nonexistent_db")
+	if err == nil {
+		t.Error("Expected error for nonexistent_db, but got nil")
+	} else if !strings.Contains(err.Error(), "not found in config") {
+		t.Errorf("Unexpected error message for nonexistent_db: %v", err)
+	}
+
+	// Restaurar estado original
+	dbClients = originalDbClients
+	dbConnErrors = originalDbConnErrors
 }

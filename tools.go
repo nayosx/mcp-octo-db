@@ -15,21 +15,32 @@ import (
 // dbClients registra todos los pools de bases de datos activos
 var dbClients = make(map[string]DBClient)
 
+// dbConnErrors registra los errores de conexión de las bases de datos que fallaron al iniciar
+var dbConnErrors = make(map[string]error)
+
 // getClient busca un cliente de base de datos en el registro por nombre (insensible a mayúsculas/minúsculas)
 func getClient(dbName string) (DBClient, error) {
 	name := strings.ToLower(dbName)
 	if name == "" {
 		name = "default"
 	}
-	client, ok := dbClients[name]
-	if !ok {
-		var available []string
-		for k := range dbClients {
-			available = append(available, k)
-		}
-		return nil, fmt.Errorf("database '%s' not found in config. Available databases: %s", dbName, strings.Join(available, ", "))
+	
+	// 1. Intentar obtener el cliente activo
+	if client, ok := dbClients[name]; ok {
+		return client, nil
 	}
-	return client, nil
+	
+	// 2. Si no está activo, verificar si falló al conectar en el arranque
+	if connErr, failed := dbConnErrors[name]; failed {
+		return nil, fmt.Errorf("database '%s' is offline. Connection failed on startup: %v", dbName, connErr)
+	}
+	
+	// 3. De lo contrario, no existe en la configuración
+	var available []string
+	for k := range dbClients {
+		available = append(available, k)
+	}
+	return nil, fmt.Errorf("database '%s' not found in config. Available databases: %s", dbName, strings.Join(available, ", "))
 }
 
 // textResult es un helper para formatear respuestas de texto legibles para el protocolo MCP
