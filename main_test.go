@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -73,6 +74,54 @@ func TestValidateQuerySafety(t *testing.T) {
 	GlobalSettings.DeniedTables = []string{}
 }
 
+func TestValidateReadOnlySQL(t *testing.T) {
+	GlobalSettings.AllowedTables = []string{}
+	GlobalSettings.DeniedTables = []string{}
+	GlobalSettings.AllowedSchemas = []string{}
+	defer func() {
+		GlobalSettings.AllowedTables = []string{}
+		GlobalSettings.DeniedTables = []string{}
+		GlobalSettings.AllowedSchemas = []string{}
+	}()
+
+	tests := []struct {
+		name    string
+		sql     string
+		wantErr bool
+	}{
+		{
+			name:    "plain select allowed",
+			sql:     "SELECT * FROM users",
+			wantErr: false,
+		},
+		{
+			name:    "writable cte blocked",
+			sql:     "WITH deleted AS (DELETE FROM users RETURNING id) SELECT * FROM deleted",
+			wantErr: true,
+		},
+		{
+			name:    "multiple statements blocked",
+			sql:     "SELECT * FROM users; SELECT * FROM posts",
+			wantErr: true,
+		},
+		{
+			name:    "keyword inside string ignored",
+			sql:     "SELECT 'DELETE FROM users' AS example",
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		err := validateReadOnlySQL(tc.sql)
+		if tc.wantErr && err == nil {
+			t.Errorf("%s: expected error, got nil", tc.name)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("%s: expected no error, got %v", tc.name, err)
+		}
+	}
+}
+
 func TestIsSchemaAllowed(t *testing.T) {
 	GlobalSettings.AllowedSchemas = []string{"public", "analytics"}
 
@@ -92,6 +141,91 @@ func TestIsSchemaAllowed(t *testing.T) {
 	GlobalSettings.AllowedSchemas = []string{}
 }
 
+func TestValidateQuerySafetySchemaRestrictions(t *testing.T) {
+	GlobalSettings.AllowedTables = []string{}
+	GlobalSettings.DeniedTables = []string{}
+	GlobalSettings.AllowedSchemas = []string{"public"}
+	defer func() {
+		GlobalSettings.AllowedTables = []string{}
+		GlobalSettings.DeniedTables = []string{}
+		GlobalSettings.AllowedSchemas = []string{}
+	}()
+
+	if err := validateQuerySafety("SELECT * FROM public.users"); err != nil {
+		t.Errorf("expected public schema to be allowed, got %v", err)
+	}
+
+	if err := validateQuerySafety("SELECT * FROM private.users"); err == nil {
+		t.Error("expected private schema to be blocked")
+	}
+}
+
+func TestValidateSingleStatement(t *testing.T) {
+	tests := []struct {
+		sql     string
+		wantErr bool
+	}{
+		{"SELECT * FROM users", false},
+		{"SELECT * FROM users;", false},
+		{"SELECT ';' AS semicolon", false},
+		{"SELECT * FROM users; DELETE FROM users", true},
+	}
+
+	for _, tc := range tests {
+		err := validateSingleStatement(tc.sql)
+		if tc.wantErr && err == nil {
+			t.Errorf("expected error for %q, got nil", tc.sql)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("expected no error for %q, got %v", tc.sql, err)
+		}
+	}
+}
+
+func TestExtractQuestionHints(t *testing.T) {
+	hints := extractQuestionHints("quiero el reporte de cuantos items se vendieron para el service 133 este mes")
+
+	if !slices.Contains(hints.IDValues, "133") {
+		t.Fatalf("expected id 133 in hints, got %+v", hints)
+	}
+	if !slices.Contains(hints.TimeframeTerms, "este mes") && !slices.Contains(hints.TimeframeTerms, "mes") {
+		t.Fatalf("expected timeframe hint, got %+v", hints)
+	}
+	if len(hints.MetricTerms) == 0 {
+		t.Fatalf("expected metric hints, got %+v", hints)
+	}
+}
+
+func TestScoreColumnMatch(t *testing.T) {
+	hints := questionHints{
+		TableTerms:  []string{"service"},
+		MetricTerms: []string{"vend"},
+	}
+	match := ColumnMatch{
+		Table:  "service_sales",
+		Column: "items_sold",
+	}
+	score := scoreColumnMatch(match, hints)
+	if score <= 0 {
+		t.Fatalf("expected positive score, got %d", score)
+	}
+}
+
+func TestSummarizeRelationships(t *testing.T) {
+	relationships := []RelationshipInfo{
+		{FromTable: "order_items", ToTable: "services"},
+		{FromTable: "payments", ToTable: "orders"},
+	}
+
+	filtered := summarizeRelationships(relationships, []string{"services", "order_items"})
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 filtered relationship, got %d", len(filtered))
+	}
+	if filtered[0].FromTable != "order_items" || filtered[0].ToTable != "services" {
+		t.Fatalf("unexpected relationship: %+v", filtered[0])
+	}
+}
+
 func TestLoadConfig(t *testing.T) {
 	// Backup and clear relevant env variables
 	backupEnv := make(map[string]string)
@@ -99,6 +233,10 @@ func TestLoadConfig(t *testing.T) {
 		"MCP_ENABLE_WRITE",
 		"MCP_MAX_ROWS",
 		"MCP_QUERY_TIMEOUT_SECONDS",
+		"MCP_MAX_OPEN_CONNS",
+		"MCP_MAX_IDLE_CONNS",
+		"MCP_CONN_MAX_LIFETIME_SECONDS",
+		"MCP_CONN_MAX_IDLE_TIME_SECONDS",
 		"MCP_ALLOWED_SCHEMAS",
 		"MCP_ALLOWED_TABLES",
 		"MCP_DENIED_TABLES",
@@ -137,6 +275,10 @@ settings:
   enable_write: true
   max_rows: 100
   query_timeout_seconds: 5
+  max_open_conns: 12
+  max_idle_conns: 6
+  conn_max_lifetime_seconds: 60
+  conn_max_idle_time_seconds: 30
   allowed_schemas:
     - public
   denied_tables:
@@ -156,17 +298,7 @@ settings:
 	}
 
 	// Reset GlobalSettings to default values before test runs
-	GlobalSettings = Settings{
-		EnableWrite:         false,
-		MaxRows:             500,
-		QueryTimeoutSeconds: 10,
-		AllowedSchemas:      []string{},
-		AllowedTables:       []string{},
-		DeniedTables:        []string{},
-		LogLevel:            "info",
-		LogFormat:           "text",
-		AuditLog:            false,
-	}
+	GlobalSettings = defaultSettings
 
 	// Load configuration using the empty env file
 	dbConfigs, err := LoadConfig(tmpEnv.Name(), tmpfile.Name())
@@ -193,6 +325,18 @@ settings:
 	if GlobalSettings.QueryTimeoutSeconds != 5 {
 		t.Errorf("Expected QueryTimeoutSeconds to be 5, got %d", GlobalSettings.QueryTimeoutSeconds)
 	}
+	if GlobalSettings.MaxOpenConns != 12 {
+		t.Errorf("Expected MaxOpenConns to be 12, got %d", GlobalSettings.MaxOpenConns)
+	}
+	if GlobalSettings.MaxIdleConns != 6 {
+		t.Errorf("Expected MaxIdleConns to be 6, got %d", GlobalSettings.MaxIdleConns)
+	}
+	if GlobalSettings.ConnMaxLifetimeSecs != 60 {
+		t.Errorf("Expected ConnMaxLifetimeSecs to be 60, got %d", GlobalSettings.ConnMaxLifetimeSecs)
+	}
+	if GlobalSettings.ConnMaxIdleTimeSecs != 30 {
+		t.Errorf("Expected ConnMaxIdleTimeSecs to be 30, got %d", GlobalSettings.ConnMaxIdleTimeSecs)
+	}
 	if len(GlobalSettings.AllowedSchemas) != 1 || GlobalSettings.AllowedSchemas[0] != "public" {
 		t.Errorf("Unexpected AllowedSchemas: %v", GlobalSettings.AllowedSchemas)
 	}
@@ -201,18 +345,208 @@ settings:
 	}
 }
 
+func TestLoadConfigNormalizesSettingsAndNames(t *testing.T) {
+	tmpEnv, err := os.CreateTemp("", "empty*.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpEnv.Name())
+	tmpEnv.Close()
+
+	yamlContent := `
+databases:
+  Analytics:
+    type: POSTGRES
+    host: localhost
+    port: "5432"
+    user: appuser
+    password: secret
+    name: analytics
+    sslmode: disable
+settings:
+  allowed_schemas: [" Public ", "public", "ANALYTICS "]
+  allowed_tables: [" Users ", "users", "Orders"]
+  denied_tables: [" Secrets ", "secrets"]
+  log_level: INFO
+  log_format: JSON
+`
+	tmpfile, err := os.CreateTemp("", "config*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.Write([]byte(yamlContent)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	GlobalSettings = defaultSettings
+	dbConfigs, err := LoadConfig(tmpEnv.Name(), tmpfile.Name())
+	if err != nil {
+		t.Fatalf("expected config to load, got %v", err)
+	}
+
+	if _, ok := dbConfigs["analytics"]; !ok {
+		t.Fatalf("expected normalized database key 'analytics', got %v", mapsKeys(dbConfigs))
+	}
+	if GlobalSettings.LogLevel != "info" {
+		t.Errorf("expected normalized log level info, got %s", GlobalSettings.LogLevel)
+	}
+	if GlobalSettings.LogFormat != "json" {
+		t.Errorf("expected normalized log format json, got %s", GlobalSettings.LogFormat)
+	}
+	if !slices.Equal(GlobalSettings.AllowedSchemas, []string{"public", "analytics"}) {
+		t.Errorf("unexpected normalized schemas: %v", GlobalSettings.AllowedSchemas)
+	}
+	if !slices.Equal(GlobalSettings.AllowedTables, []string{"users", "orders"}) {
+		t.Errorf("unexpected normalized tables: %v", GlobalSettings.AllowedTables)
+	}
+	if !slices.Equal(GlobalSettings.DeniedTables, []string{"secrets"}) {
+		t.Errorf("unexpected normalized denied tables: %v", GlobalSettings.DeniedTables)
+	}
+}
+
+func TestLoadConfigRejectsInvalidSettings(t *testing.T) {
+	tmpEnv, err := os.CreateTemp("", "empty*.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpEnv.Name())
+	tmpEnv.Close()
+
+	yamlContent := `
+databases:
+  broken:
+    type: postgres
+    host: localhost
+    port: "5432"
+    user: appuser
+    name: appdb
+settings:
+  max_rows: 0
+  query_timeout_seconds: -1
+  max_open_conns: 0
+  max_idle_conns: 99
+  conn_max_lifetime_seconds: -1
+  conn_max_idle_time_seconds: -1
+  log_level: verbose
+  log_format: pretty
+`
+	tmpfile, err := os.CreateTemp("", "config*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.Write([]byte(yamlContent)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	GlobalSettings = defaultSettings
+	_, err = LoadConfig(tmpEnv.Name(), tmpfile.Name())
+	if err == nil {
+		t.Fatal("expected config validation error, got nil")
+	}
+
+	wantSubstrings := []string{
+		"settings.max_rows must be greater than 0",
+		"settings.query_timeout_seconds must be greater than 0",
+		"settings.max_open_conns must be greater than 0",
+		"settings.max_idle_conns cannot be greater than settings.max_open_conns",
+		"settings.conn_max_lifetime_seconds must be greater than or equal to 0",
+		"settings.conn_max_idle_time_seconds must be greater than or equal to 0",
+		"settings.log_level must be one of: debug, info, warn, error",
+		"settings.log_format must be one of: text, json",
+	}
+	for _, substring := range wantSubstrings {
+		if !strings.Contains(err.Error(), substring) {
+			t.Errorf("expected error to contain %q, got %v", substring, err)
+		}
+	}
+}
+
+func TestLoadConfigRejectsIncompleteDBConfig(t *testing.T) {
+	tmpEnv, err := os.CreateTemp("", "empty*.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpEnv.Name())
+	tmpEnv.Close()
+
+	yamlContent := `
+databases:
+  broken:
+    type: mysql
+    host: localhost
+settings:
+  max_rows: 10
+`
+	tmpfile, err := os.CreateTemp("", "config*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.Write([]byte(yamlContent)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	GlobalSettings = defaultSettings
+	_, err = LoadConfig(tmpEnv.Name(), tmpfile.Name())
+	if err == nil {
+		t.Fatal("expected invalid db config error, got nil")
+	}
+
+	wantSubstrings := []string{
+		"database 'broken': name is required",
+		"database 'broken': port is required for mysql",
+		"database 'broken': user is required for mysql",
+	}
+	for _, substring := range wantSubstrings {
+		if !strings.Contains(err.Error(), substring) {
+			t.Errorf("expected error to contain %q, got %v", substring, err)
+		}
+	}
+}
+
+func TestEnabledToolNames(t *testing.T) {
+	GlobalSettings = defaultSettings
+	tools := enabledToolNames()
+	if slices.Contains(tools, "write_query") {
+		t.Fatalf("write_query should be disabled by default, got %v", tools)
+	}
+	for _, required := range []string{"server_info", "list_views", "list_indexes", "find_columns", "list_relationships", "suggest_query_plan"} {
+		if !slices.Contains(tools, required) {
+			t.Fatalf("expected %s in enabled tools, got %v", required, tools)
+		}
+	}
+
+	GlobalSettings.EnableWrite = true
+	tools = enabledToolNames()
+	if !slices.Contains(tools, "write_query") {
+		t.Fatalf("write_query should be enabled when flag is true, got %v", tools)
+	}
+}
+
 func TestConnectionFailureTolerance(t *testing.T) {
 	// 1. Guardar el estado anterior
-	originalDbClients := dbClients
-	originalDbConnErrors := dbConnErrors
+	originalState := appState
 
 	// Limpiar / Setup mock data
-	dbClients = make(map[string]DBClient)
-	dbConnErrors = make(map[string]error)
+	appState = NewServerState()
 
 	// Mockear una base offline
 	mockError := fmt.Errorf("connection timeout on port 5432")
-	dbConnErrors["offline_db"] = mockError
+	appState.AddConnectionError("offline_db", mockError)
 
 	// Intentar obtener el cliente
 	_, err := getClient("offline_db")
@@ -231,6 +565,33 @@ func TestConnectionFailureTolerance(t *testing.T) {
 	}
 
 	// Restaurar estado original
-	dbClients = originalDbClients
-	dbConnErrors = originalDbConnErrors
+	appState = originalState
+}
+
+func TestEffectiveConfigMasksSecrets(t *testing.T) {
+	dbConfigs := map[string]DBConfig{
+		"default": {
+			Type:     "postgres",
+			Host:     "localhost",
+			Port:     "5432",
+			User:     "appuser",
+			Password: "super-secret",
+			Name:     "appdb",
+			SSLMode:  "disable",
+		},
+	}
+
+	config := EffectiveConfig(dbConfigs)
+	databases := config["databases"].(map[string]map[string]any)
+	if databases["default"]["password"] != "****" {
+		t.Fatalf("expected masked password, got %v", databases["default"]["password"])
+	}
+}
+
+func mapsKeys[K comparable, V any](m map[K]V) []K {
+	keys := make([]K, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	return keys
 }

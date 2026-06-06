@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "octo-db": {
+      "command": "/absolute/path/to/octo-db",
+      "args": [
+        "--env",
+        "/absolute/path/to/.env"
+      ],
+      "cwd": "/absolute/path/to/project"
+    }
+  }
+}

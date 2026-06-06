@@ -15,6 +15,10 @@ type Settings struct {
 	EnableWrite         bool
 	MaxRows             int
 	QueryTimeoutSeconds int
+	MaxOpenConns        int
+	MaxIdleConns        int
+	ConnMaxLifetimeSecs int
+	ConnMaxIdleTimeSecs int
 	AllowedSchemas      []string
 	AllowedTables       []string
 	DeniedTables        []string
@@ -23,10 +27,14 @@ type Settings struct {
 	AuditLog            bool
 }
 
-var GlobalSettings = Settings{
+var defaultSettings = Settings{
 	EnableWrite:         false,
 	MaxRows:             500,
 	QueryTimeoutSeconds: 10,
+	MaxOpenConns:        10,
+	MaxIdleConns:        5,
+	ConnMaxLifetimeSecs: 300,
+	ConnMaxIdleTimeSecs: 180,
 	AllowedSchemas:      []string{},
 	AllowedTables:       []string{},
 	DeniedTables:        []string{},
@@ -34,6 +42,8 @@ var GlobalSettings = Settings{
 	LogFormat:           "text",
 	AuditLog:            false,
 }
+
+var GlobalSettings = defaultSettings
 
 type YamlConfig struct {
 	Databases map[string]struct {
@@ -49,6 +59,10 @@ type YamlConfig struct {
 		EnableWrite         *bool    `yaml:"enable_write"`
 		MaxRows             *int     `yaml:"max_rows"`
 		QueryTimeoutSeconds *int     `yaml:"query_timeout_seconds"`
+		MaxOpenConns        *int     `yaml:"max_open_conns"`
+		MaxIdleConns        *int     `yaml:"max_idle_conns"`
+		ConnMaxLifetimeSecs *int     `yaml:"conn_max_lifetime_seconds"`
+		ConnMaxIdleTimeSecs *int     `yaml:"conn_max_idle_time_seconds"`
 		AllowedSchemas      []string `yaml:"allowed_schemas"`
 		AllowedTables       []string `yaml:"allowed_tables"`
 		DeniedTables        []string `yaml:"denied_tables"`
@@ -59,6 +73,8 @@ type YamlConfig struct {
 }
 
 func LoadConfig(envPath, configPath string) (map[string]DBConfig, error) {
+	GlobalSettings = defaultSettings
+
 	// 1. Cargar .env si existe o si se especifica
 	if envPath != "" {
 		if err := godotenv.Load(envPath); err != nil {
@@ -93,7 +109,7 @@ func LoadConfig(envPath, configPath string) (map[string]DBConfig, error) {
 
 		// Cargar DBs del YAML
 		for name, db := range yamlCfg.Databases {
-			dbConfigs[strings.ToLower(name)] = DBConfig{
+			dbConfigs[strings.ToLower(strings.TrimSpace(name))] = DBConfig{
 				Type:     db.Type,
 				Host:     db.Host,
 				Port:     db.Port,
@@ -139,6 +155,39 @@ func LoadConfig(envPath, configPath string) (map[string]DBConfig, error) {
 		GlobalSettings.QueryTimeoutSeconds = *yamlCfg.Settings.QueryTimeoutSeconds
 	}
 
+	// Pool settings
+	if val, ok := os.LookupEnv("MCP_MAX_OPEN_CONNS"); ok {
+		if i, err := strconv.Atoi(val); err == nil {
+			GlobalSettings.MaxOpenConns = i
+		}
+	} else if yamlLoaded && yamlCfg.Settings.MaxOpenConns != nil {
+		GlobalSettings.MaxOpenConns = *yamlCfg.Settings.MaxOpenConns
+	}
+
+	if val, ok := os.LookupEnv("MCP_MAX_IDLE_CONNS"); ok {
+		if i, err := strconv.Atoi(val); err == nil {
+			GlobalSettings.MaxIdleConns = i
+		}
+	} else if yamlLoaded && yamlCfg.Settings.MaxIdleConns != nil {
+		GlobalSettings.MaxIdleConns = *yamlCfg.Settings.MaxIdleConns
+	}
+
+	if val, ok := os.LookupEnv("MCP_CONN_MAX_LIFETIME_SECONDS"); ok {
+		if i, err := strconv.Atoi(val); err == nil {
+			GlobalSettings.ConnMaxLifetimeSecs = i
+		}
+	} else if yamlLoaded && yamlCfg.Settings.ConnMaxLifetimeSecs != nil {
+		GlobalSettings.ConnMaxLifetimeSecs = *yamlCfg.Settings.ConnMaxLifetimeSecs
+	}
+
+	if val, ok := os.LookupEnv("MCP_CONN_MAX_IDLE_TIME_SECONDS"); ok {
+		if i, err := strconv.Atoi(val); err == nil {
+			GlobalSettings.ConnMaxIdleTimeSecs = i
+		}
+	} else if yamlLoaded && yamlCfg.Settings.ConnMaxIdleTimeSecs != nil {
+		GlobalSettings.ConnMaxIdleTimeSecs = *yamlCfg.Settings.ConnMaxIdleTimeSecs
+	}
+
 	// Allowed Schemas
 	if val, ok := os.LookupEnv("MCP_ALLOWED_SCHEMAS"); ok {
 		GlobalSettings.AllowedSchemas = parseCommaList(val)
@@ -181,6 +230,13 @@ func LoadConfig(envPath, configPath string) (map[string]DBConfig, error) {
 		GlobalSettings.AuditLog = *yamlCfg.Settings.AuditLog
 	}
 
+	normalizeDBConfigs(dbConfigs)
+	normalizeSettings(&GlobalSettings)
+
+	if err := validateLoadedConfig(dbConfigs, GlobalSettings); err != nil {
+		return nil, err
+	}
+
 	return dbConfigs, nil
 }
 
@@ -194,4 +250,157 @@ func parseCommaList(val string) []string {
 		}
 	}
 	return res
+}
+
+func normalizeDBConfigs(configs map[string]DBConfig) {
+	for name, cfg := range configs {
+		normalizedName := strings.ToLower(strings.TrimSpace(name))
+		cfg.Type = strings.ToLower(strings.TrimSpace(cfg.Type))
+		cfg.Host = strings.TrimSpace(cfg.Host)
+		cfg.Port = strings.TrimSpace(cfg.Port)
+		cfg.User = strings.TrimSpace(cfg.User)
+		cfg.Password = strings.TrimSpace(cfg.Password)
+		cfg.Name = strings.TrimSpace(cfg.Name)
+		cfg.SSLMode = strings.TrimSpace(cfg.SSLMode)
+
+		delete(configs, name)
+		configs[normalizedName] = cfg
+	}
+}
+
+func normalizeSettings(settings *Settings) {
+	settings.AllowedSchemas = uniqueLowerTrimmed(settings.AllowedSchemas)
+	settings.AllowedTables = uniqueLowerTrimmed(settings.AllowedTables)
+	settings.DeniedTables = uniqueLowerTrimmed(settings.DeniedTables)
+	settings.LogLevel = strings.ToLower(strings.TrimSpace(settings.LogLevel))
+	settings.LogFormat = strings.ToLower(strings.TrimSpace(settings.LogFormat))
+}
+
+func uniqueLowerTrimmed(values []string) []string {
+	seen := make(map[string]struct{})
+	var result []string
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, normalized)
+	}
+	return result
+}
+
+func validateLoadedConfig(dbConfigs map[string]DBConfig, settings Settings) error {
+	var issues []string
+
+	if settings.MaxRows <= 0 {
+		issues = append(issues, "settings.max_rows must be greater than 0")
+	}
+	if settings.QueryTimeoutSeconds <= 0 {
+		issues = append(issues, "settings.query_timeout_seconds must be greater than 0")
+	}
+	if settings.MaxOpenConns <= 0 {
+		issues = append(issues, "settings.max_open_conns must be greater than 0")
+	}
+	if settings.MaxIdleConns < 0 {
+		issues = append(issues, "settings.max_idle_conns must be greater than or equal to 0")
+	}
+	if settings.MaxIdleConns > settings.MaxOpenConns {
+		issues = append(issues, "settings.max_idle_conns cannot be greater than settings.max_open_conns")
+	}
+	if settings.ConnMaxLifetimeSecs < 0 {
+		issues = append(issues, "settings.conn_max_lifetime_seconds must be greater than or equal to 0")
+	}
+	if settings.ConnMaxIdleTimeSecs < 0 {
+		issues = append(issues, "settings.conn_max_idle_time_seconds must be greater than or equal to 0")
+	}
+	if settings.LogFormat != "text" && settings.LogFormat != "json" {
+		issues = append(issues, "settings.log_format must be one of: text, json")
+	}
+	switch settings.LogLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		issues = append(issues, "settings.log_level must be one of: debug, info, warn, error")
+	}
+
+	for name, cfg := range dbConfigs {
+		if name == "" {
+			issues = append(issues, "database names cannot be empty")
+			continue
+		}
+
+		switch cfg.Type {
+		case "postgres", "postgresql", "mysql", "mariadb", "sqlite", "sqlite3":
+		default:
+			issues = append(issues, fmt.Sprintf("database '%s': unsupported type '%s'", name, cfg.Type))
+			continue
+		}
+
+		if cfg.Name == "" {
+			issues = append(issues, fmt.Sprintf("database '%s': name is required", name))
+		}
+
+		switch cfg.Type {
+		case "postgres", "postgresql", "mysql", "mariadb":
+			if cfg.Host == "" {
+				issues = append(issues, fmt.Sprintf("database '%s': host is required for %s", name, cfg.Type))
+			}
+			if cfg.Port == "" {
+				issues = append(issues, fmt.Sprintf("database '%s': port is required for %s", name, cfg.Type))
+			}
+			if cfg.User == "" {
+				issues = append(issues, fmt.Sprintf("database '%s': user is required for %s", name, cfg.Type))
+			}
+		}
+	}
+
+	if len(issues) > 0 {
+		return fmt.Errorf("configuration validation failed:\n- %s", strings.Join(issues, "\n- "))
+	}
+
+	return nil
+}
+
+func EffectiveConfig(dbConfigs map[string]DBConfig) map[string]any {
+	maskedDBs := make(map[string]map[string]any, len(dbConfigs))
+	for name, cfg := range dbConfigs {
+		maskedDBs[name] = map[string]any{
+			"type":     cfg.Type,
+			"host":     cfg.Host,
+			"port":     cfg.Port,
+			"user":     cfg.User,
+			"password": maskSecret(cfg.Password),
+			"name":     cfg.Name,
+			"sslmode":  cfg.SSLMode,
+		}
+	}
+
+	return map[string]any{
+		"settings": map[string]any{
+			"enable_write":               GlobalSettings.EnableWrite,
+			"max_rows":                   GlobalSettings.MaxRows,
+			"query_timeout_seconds":      GlobalSettings.QueryTimeoutSeconds,
+			"max_open_conns":             GlobalSettings.MaxOpenConns,
+			"max_idle_conns":             GlobalSettings.MaxIdleConns,
+			"conn_max_lifetime_seconds":  GlobalSettings.ConnMaxLifetimeSecs,
+			"conn_max_idle_time_seconds": GlobalSettings.ConnMaxIdleTimeSecs,
+			"allowed_schemas":            GlobalSettings.AllowedSchemas,
+			"allowed_tables":             GlobalSettings.AllowedTables,
+			"denied_tables":              GlobalSettings.DeniedTables,
+			"log_level":                  GlobalSettings.LogLevel,
+			"log_format":                 GlobalSettings.LogFormat,
+			"audit_log":                  GlobalSettings.AuditLog,
+		},
+		"databases": maskedDBs,
+	}
+}
+
+func maskSecret(value string) string {
+	if value == "" {
+		return "(empty)"
+	}
+	return "****"
 }

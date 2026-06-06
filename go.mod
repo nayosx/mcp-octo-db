@@ -1,4 +1,4 @@
-module mcp-octo-db
+module octo-db
 
 go 1.25.0
 

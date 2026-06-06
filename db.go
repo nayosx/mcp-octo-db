@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -21,10 +22,36 @@ type ColumnInfo struct {
 	PrimaryKey bool    `json:"primary_key"`
 }
 
+type IndexInfo struct {
+	Name    string `json:"name"`
+	Unique  bool   `json:"unique"`
+	Columns string `json:"columns,omitempty"`
+}
+
+type ColumnMatch struct {
+	Schema   string `json:"schema,omitempty"`
+	Table    string `json:"table"`
+	Column   string `json:"column"`
+	DataType string `json:"data_type,omitempty"`
+}
+
+type RelationshipInfo struct {
+	FromSchema string `json:"from_schema,omitempty"`
+	FromTable  string `json:"from_table"`
+	FromColumn string `json:"from_column"`
+	ToSchema   string `json:"to_schema,omitempty"`
+	ToTable    string `json:"to_table"`
+	ToColumn   string `json:"to_column"`
+}
+
 // DBClient define los métodos comunes para interactuar con Postgres y MySQL/MariaDB
 type DBClient interface {
 	ListTables(ctx context.Context, schema string) ([]string, error)
 	ListSchemas(ctx context.Context) ([]string, error)
+	ListViews(ctx context.Context, schema string) ([]string, error)
+	ListIndexes(ctx context.Context, schema, table string) ([]IndexInfo, error)
+	FindColumns(ctx context.Context, schema, search string, limit int) ([]ColumnMatch, error)
+	ListRelationships(ctx context.Context, schema, table string) ([]RelationshipInfo, error)
 	DescribeTable(ctx context.Context, schema, table string) ([]ColumnInfo, error)
 	ExecuteQuery(ctx context.Context, query string) ([]map[string]any, error)
 	ExecuteReadOnlyQuery(ctx context.Context, query string) ([]map[string]any, error)
@@ -102,6 +129,11 @@ func getEnv(key, defaultVal string) string {
 
 // NewDBClient instancia el cliente correspondiente según el tipo configurado
 func NewDBClient(cfg DBConfig) (DBClient, error) {
+	connectTimeout := time.Duration(GlobalSettings.QueryTimeoutSeconds) * time.Second
+	if connectTimeout <= 0 {
+		connectTimeout = 10 * time.Second
+	}
+
 	switch strings.ToLower(cfg.Type) {
 	case "postgres", "postgresql":
 		dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
@@ -110,7 +142,10 @@ func NewDBClient(cfg DBConfig) (DBClient, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open postgres connection: %w", err)
 		}
-		if err := db.Ping(); err != nil {
+		configureDBPool(db)
+		pingCtx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+		defer cancel()
+		if err := db.PingContext(pingCtx); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("failed to ping postgres: %w", err)
 		}
@@ -123,7 +158,10 @@ func NewDBClient(cfg DBConfig) (DBClient, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open mysql connection: %w", err)
 		}
-		if err := db.Ping(); err != nil {
+		configureDBPool(db)
+		pingCtx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+		defer cancel()
+		if err := db.PingContext(pingCtx); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("failed to ping mysql: %w", err)
 		}
@@ -134,7 +172,10 @@ func NewDBClient(cfg DBConfig) (DBClient, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open sqlite connection: %w", err)
 		}
-		if err := db.Ping(); err != nil {
+		configureDBPool(db)
+		pingCtx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+		defer cancel()
+		if err := db.PingContext(pingCtx); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("failed to ping sqlite: %w", err)
 		}
@@ -143,6 +184,13 @@ func NewDBClient(cfg DBConfig) (DBClient, error) {
 	default:
 		return nil, fmt.Errorf("unsupported database type: %s", cfg.Type)
 	}
+}
+
+func configureDBPool(db *sql.DB) {
+	db.SetMaxOpenConns(GlobalSettings.MaxOpenConns)
+	db.SetMaxIdleConns(GlobalSettings.MaxIdleConns)
+	db.SetConnMaxLifetime(time.Duration(GlobalSettings.ConnMaxLifetimeSecs) * time.Second)
+	db.SetConnMaxIdleTime(time.Duration(GlobalSettings.ConnMaxIdleTimeSecs) * time.Second)
 }
 
 // ==========================================
@@ -163,7 +211,7 @@ func (c *PostgresClient) ListSchemas(ctx context.Context) ([]string, error) {
 		FROM information_schema.schemata 
 		WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
 		ORDER BY schema_name;`
-	
+
 	rows, err := c.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -190,7 +238,7 @@ func (c *PostgresClient) ListTables(ctx context.Context, schema string) ([]strin
 		FROM information_schema.tables 
 		WHERE table_schema = $1 AND table_type = 'BASE TABLE'
 		ORDER BY table_name;`
-	
+
 	rows, err := c.db.QueryContext(ctx, query, schema)
 	if err != nil {
 		return nil, err
@@ -206,6 +254,138 @@ func (c *PostgresClient) ListTables(ctx context.Context, schema string) ([]strin
 		tables = append(tables, table)
 	}
 	return tables, nil
+}
+
+func (c *PostgresClient) ListViews(ctx context.Context, schema string) ([]string, error) {
+	if schema == "" {
+		schema = "public"
+	}
+	query := `
+		SELECT table_name
+		FROM information_schema.views
+		WHERE table_schema = $1
+		ORDER BY table_name;`
+
+	rows, err := c.db.QueryContext(ctx, query, schema)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var views []string
+	for rows.Next() {
+		var view string
+		if err := rows.Scan(&view); err != nil {
+			return nil, err
+		}
+		views = append(views, view)
+	}
+	return views, nil
+}
+
+func (c *PostgresClient) ListIndexes(ctx context.Context, schema, table string) ([]IndexInfo, error) {
+	if schema == "" {
+		schema = "public"
+	}
+	query := `
+		SELECT indexname, indexdef
+		FROM pg_indexes
+		WHERE schemaname = $1 AND tablename = $2
+		ORDER BY indexname;`
+
+	rows, err := c.db.QueryContext(ctx, query, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var indexes []IndexInfo
+	for rows.Next() {
+		var idx IndexInfo
+		var indexDef string
+		if err := rows.Scan(&idx.Name, &indexDef); err != nil {
+			return nil, err
+		}
+		idx.Unique = strings.Contains(strings.ToUpper(indexDef), "UNIQUE INDEX")
+		idx.Columns = parseIndexColumns(indexDef)
+		indexes = append(indexes, idx)
+	}
+	return indexes, nil
+}
+
+func (c *PostgresClient) FindColumns(ctx context.Context, schema, search string, limit int) ([]ColumnMatch, error) {
+	if schema == "" {
+		schema = "public"
+	}
+	query := `
+		SELECT table_schema, table_name, column_name, data_type
+		FROM information_schema.columns
+		WHERE table_schema = $1
+		  AND ($2 = '' OR column_name ILIKE $2 OR table_name ILIKE $2)
+		ORDER BY table_name, ordinal_position
+		LIMIT $3;`
+
+	like := ""
+	if search != "" {
+		like = "%" + search + "%"
+	}
+
+	rows, err := c.db.QueryContext(ctx, query, schema, like, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var matches []ColumnMatch
+	for rows.Next() {
+		var match ColumnMatch
+		if err := rows.Scan(&match.Schema, &match.Table, &match.Column, &match.DataType); err != nil {
+			return nil, err
+		}
+		matches = append(matches, match)
+	}
+	return matches, nil
+}
+
+func (c *PostgresClient) ListRelationships(ctx context.Context, schema, table string) ([]RelationshipInfo, error) {
+	if schema == "" {
+		schema = "public"
+	}
+	query := `
+		SELECT
+			tc.table_schema,
+			tc.table_name,
+			kcu.column_name,
+			ccu.table_schema,
+			ccu.table_name,
+			ccu.column_name
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu
+		  ON tc.constraint_name = kcu.constraint_name
+		 AND tc.table_schema = kcu.table_schema
+		JOIN information_schema.constraint_column_usage ccu
+		  ON ccu.constraint_name = tc.constraint_name
+		 AND ccu.table_schema = tc.table_schema
+		WHERE tc.constraint_type = 'FOREIGN KEY'
+		  AND tc.table_schema = $1
+		  AND ($2 = '' OR tc.table_name = $2 OR ccu.table_name = $2)
+		ORDER BY tc.table_name, kcu.column_name;`
+
+	rows, err := c.db.QueryContext(ctx, query, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var relationships []RelationshipInfo
+	for rows.Next() {
+		var rel RelationshipInfo
+		if err := rows.Scan(&rel.FromSchema, &rel.FromTable, &rel.FromColumn, &rel.ToSchema, &rel.ToTable, &rel.ToColumn); err != nil {
+			return nil, err
+		}
+		relationships = append(relationships, rel)
+	}
+	return relationships, nil
 }
 
 func (c *PostgresClient) DescribeTable(ctx context.Context, schema, table string) ([]ColumnInfo, error) {
@@ -306,7 +486,7 @@ func (c *MySQLClient) ListSchemas(ctx context.Context) ([]string, error) {
 		SELECT schema_name 
 		FROM information_schema.schemata 
 		ORDER BY schema_name;`
-	
+
 	rows, err := c.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -330,7 +510,7 @@ func (c *MySQLClient) ListTables(ctx context.Context, schema string) ([]string, 
 		FROM information_schema.tables 
 		WHERE table_schema = COALESCE(NULLIF(?, ''), DATABASE()) AND table_type = 'BASE TABLE'
 		ORDER BY table_name;`
-	
+
 	rows, err := c.db.QueryContext(ctx, query, schema)
 	if err != nil {
 		return nil, err
@@ -346,6 +526,122 @@ func (c *MySQLClient) ListTables(ctx context.Context, schema string) ([]string, 
 		tables = append(tables, table)
 	}
 	return tables, nil
+}
+
+func (c *MySQLClient) ListViews(ctx context.Context, schema string) ([]string, error) {
+	query := `
+		SELECT table_name
+		FROM information_schema.views
+		WHERE table_schema = COALESCE(NULLIF(?, ''), DATABASE())
+		ORDER BY table_name;`
+
+	rows, err := c.db.QueryContext(ctx, query, schema)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var views []string
+	for rows.Next() {
+		var view string
+		if err := rows.Scan(&view); err != nil {
+			return nil, err
+		}
+		views = append(views, view)
+	}
+	return views, nil
+}
+
+func (c *MySQLClient) ListIndexes(ctx context.Context, schema, table string) ([]IndexInfo, error) {
+	query := `
+		SELECT index_name,
+		       non_unique,
+		       GROUP_CONCAT(column_name ORDER BY seq_in_index SEPARATOR ', ') AS columns_list
+		FROM information_schema.statistics
+		WHERE table_schema = COALESCE(NULLIF(?, ''), DATABASE()) AND table_name = ?
+		GROUP BY index_name, non_unique
+		ORDER BY index_name;`
+
+	rows, err := c.db.QueryContext(ctx, query, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var indexes []IndexInfo
+	for rows.Next() {
+		var idx IndexInfo
+		var nonUnique int
+		if err := rows.Scan(&idx.Name, &nonUnique, &idx.Columns); err != nil {
+			return nil, err
+		}
+		idx.Unique = nonUnique == 0
+		indexes = append(indexes, idx)
+	}
+	return indexes, nil
+}
+
+func (c *MySQLClient) FindColumns(ctx context.Context, schema, search string, limit int) ([]ColumnMatch, error) {
+	query := `
+		SELECT table_schema, table_name, column_name, data_type
+		FROM information_schema.columns
+		WHERE table_schema = COALESCE(NULLIF(?, ''), DATABASE())
+		  AND (? = '' OR column_name LIKE ? OR table_name LIKE ?)
+		ORDER BY table_name, ordinal_position
+		LIMIT ?;`
+
+	like := ""
+	if search != "" {
+		like = "%" + search + "%"
+	}
+
+	rows, err := c.db.QueryContext(ctx, query, schema, like, like, like, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var matches []ColumnMatch
+	for rows.Next() {
+		var match ColumnMatch
+		if err := rows.Scan(&match.Schema, &match.Table, &match.Column, &match.DataType); err != nil {
+			return nil, err
+		}
+		matches = append(matches, match)
+	}
+	return matches, nil
+}
+
+func (c *MySQLClient) ListRelationships(ctx context.Context, schema, table string) ([]RelationshipInfo, error) {
+	query := `
+		SELECT
+			kcu.table_schema,
+			kcu.table_name,
+			kcu.column_name,
+			kcu.referenced_table_schema,
+			kcu.referenced_table_name,
+			kcu.referenced_column_name
+		FROM information_schema.key_column_usage kcu
+		WHERE kcu.referenced_table_name IS NOT NULL
+		  AND kcu.table_schema = COALESCE(NULLIF(?, ''), DATABASE())
+		  AND (? = '' OR kcu.table_name = ? OR kcu.referenced_table_name = ?)
+		ORDER BY kcu.table_name, kcu.column_name;`
+
+	rows, err := c.db.QueryContext(ctx, query, schema, table, table, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var relationships []RelationshipInfo
+	for rows.Next() {
+		var rel RelationshipInfo
+		if err := rows.Scan(&rel.FromSchema, &rel.FromTable, &rel.FromColumn, &rel.ToSchema, &rel.ToTable, &rel.ToColumn); err != nil {
+			return nil, err
+		}
+		relationships = append(relationships, rel)
+	}
+	return relationships, nil
 }
 
 func (c *MySQLClient) DescribeTable(ctx context.Context, schema, table string) ([]ColumnInfo, error) {
@@ -438,7 +734,7 @@ func (c *SQLiteClient) ListTables(ctx context.Context, schema string) ([]string,
 		FROM sqlite_master 
 		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
 		ORDER BY name;`
-	
+
 	rows, err := c.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -454,6 +750,182 @@ func (c *SQLiteClient) ListTables(ctx context.Context, schema string) ([]string,
 		tables = append(tables, table)
 	}
 	return tables, nil
+}
+
+func (c *SQLiteClient) ListViews(ctx context.Context, schema string) ([]string, error) {
+	query := `
+		SELECT name
+		FROM sqlite_master
+		WHERE type = 'view'
+		ORDER BY name;`
+
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var views []string
+	for rows.Next() {
+		var view string
+		if err := rows.Scan(&view); err != nil {
+			return nil, err
+		}
+		views = append(views, view)
+	}
+	return views, nil
+}
+
+func (c *SQLiteClient) ListIndexes(ctx context.Context, schema, table string) ([]IndexInfo, error) {
+	escapedTable := strings.ReplaceAll(table, "\"", "\"\"")
+	query := fmt.Sprintf("PRAGMA index_list(\"%s\")", escapedTable)
+
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var indexes []IndexInfo
+	for rows.Next() {
+		var seq int
+		var idx IndexInfo
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &idx.Name, &unique, &origin, &partial); err != nil {
+			return nil, err
+		}
+		idx.Unique = unique == 1
+		columns, err := c.indexColumns(ctx, idx.Name)
+		if err != nil {
+			return nil, err
+		}
+		idx.Columns = strings.Join(columns, ", ")
+		indexes = append(indexes, idx)
+	}
+	return indexes, nil
+}
+
+func (c *SQLiteClient) FindColumns(ctx context.Context, schema, search string, limit int) ([]ColumnMatch, error) {
+	tables, err := c.ListTables(ctx, schema)
+	if err != nil {
+		return nil, err
+	}
+
+	search = strings.ToLower(search)
+	var matches []ColumnMatch
+	for _, table := range tables {
+		columns, err := c.DescribeTable(ctx, schema, table)
+		if err != nil {
+			return nil, err
+		}
+		for _, column := range columns {
+			if search != "" &&
+				!strings.Contains(strings.ToLower(column.Name), search) &&
+				!strings.Contains(strings.ToLower(table), search) {
+				continue
+			}
+			matches = append(matches, ColumnMatch{
+				Schema:   "main",
+				Table:    table,
+				Column:   column.Name,
+				DataType: column.Type,
+			})
+			if len(matches) >= limit {
+				return matches, nil
+			}
+		}
+	}
+	return matches, nil
+}
+
+func (c *SQLiteClient) ListRelationships(ctx context.Context, schema, table string) ([]RelationshipInfo, error) {
+	tables, err := c.ListTables(ctx, schema)
+	if err != nil {
+		return nil, err
+	}
+
+	var relationships []RelationshipInfo
+	for _, tableName := range tables {
+		if table != "" && tableName != table {
+			if !hasSQLiteReference(ctx, c.db, tableName, table) {
+				continue
+			}
+		}
+
+		rels, err := c.foreignKeysForTable(ctx, tableName)
+		if err != nil {
+			return nil, err
+		}
+		relationships = append(relationships, rels...)
+	}
+
+	return relationships, nil
+}
+
+func (c *SQLiteClient) foreignKeysForTable(ctx context.Context, tableName string) ([]RelationshipInfo, error) {
+	escapedTable := strings.ReplaceAll(tableName, "\"", "\"\"")
+	query := fmt.Sprintf("PRAGMA foreign_key_list(\"%s\")", escapedTable)
+
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var relationships []RelationshipInfo
+	for rows.Next() {
+		var id, seq int
+		var toTable, fromColumn, toColumn, onUpdate, onDelete, match string
+		if err := rows.Scan(&id, &seq, &toTable, &fromColumn, &toColumn, &onUpdate, &onDelete, &match); err != nil {
+			return nil, err
+		}
+		relationships = append(relationships, RelationshipInfo{
+			FromSchema: "main",
+			FromTable:  tableName,
+			FromColumn: fromColumn,
+			ToSchema:   "main",
+			ToTable:    toTable,
+			ToColumn:   toColumn,
+		})
+	}
+	return relationships, nil
+}
+
+func (c *SQLiteClient) indexColumns(ctx context.Context, indexName string) ([]string, error) {
+	escapedIndex := strings.ReplaceAll(indexName, "\"", "\"\"")
+	query := fmt.Sprintf("PRAGMA index_info(\"%s\")", escapedIndex)
+
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var seqno, cid int
+		var name string
+		if err := rows.Scan(&seqno, &cid, &name); err != nil {
+			return nil, err
+		}
+		columns = append(columns, name)
+	}
+	return columns, nil
+}
+
+func hasSQLiteReference(ctx context.Context, db *sql.DB, fromTable, targetTable string) bool {
+	rels, err := (&SQLiteClient{db: db}).foreignKeysForTable(ctx, fromTable)
+	if err != nil {
+		return false
+	}
+	for _, rel := range rels {
+		if rel.ToTable == targetTable || rel.FromTable == targetTable {
+			return true
+		}
+	}
+	return fromTable == targetTable
 }
 
 func (c *SQLiteClient) DescribeTable(ctx context.Context, schema, table string) ([]ColumnInfo, error) {
@@ -473,11 +945,11 @@ func (c *SQLiteClient) DescribeTable(ctx context.Context, schema, table string) 
 		var notNull int
 		var dfltVal sql.NullString
 		var pk int
-		
+
 		if err := rows.Scan(&cid, &col.Name, &col.Type, &notNull, &dfltVal, &pk); err != nil {
 			return nil, err
 		}
-		
+
 		col.Nullable = notNull == 0
 		col.PrimaryKey = pk > 0
 		if dfltVal.Valid {
@@ -553,4 +1025,13 @@ func scanRows(rows *sql.Rows) ([]map[string]any, error) {
 		result = append(result, rowMap)
 	}
 	return result, nil
+}
+
+func parseIndexColumns(indexDef string) string {
+	start := strings.Index(indexDef, "(")
+	end := strings.LastIndex(indexDef, ")")
+	if start == -1 || end == -1 || end <= start {
+		return ""
+	}
+	return strings.TrimSpace(indexDef[start+1 : end])
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+const version = "1.4.0"
 
 func main() {
 	// Configurar el log para escribir a stderr (crítico para que no ensucie stdout, usado por el protocolo MCP)
@@ -18,8 +21,16 @@ func main() {
 	// Definir banderas
 	envPath := flag.String("env", "", "Path to custom .env file")
 	configPath := flag.String("config", "", "Path to YAML config file")
+	showVersion := flag.Bool("version", false, "Print version and exit")
+	listTools := flag.Bool("list-tools", false, "Print enabled MCP tools and exit")
+	printEffectiveConfig := flag.Bool("print-effective-config", false, "Print the effective configuration with masked secrets and exit")
 
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	// Obtener argumentos posicionales
 	args := flag.Args()
@@ -38,6 +49,24 @@ func main() {
 		log.Fatalf("Error loading configuration: %v\n", err)
 	}
 
+	if *printEffectiveConfig {
+		output, err := json.MarshalIndent(EffectiveConfig(dbConfigs), "", "  ")
+		if err != nil {
+			log.Fatalf("Error formatting effective configuration: %v\n", err)
+		}
+		fmt.Println(string(output))
+		return
+	}
+
+	if *listTools {
+		output, err := json.MarshalIndent(enabledToolNames(), "", "  ")
+		if err != nil {
+			log.Fatalf("Error formatting tool list: %v\n", err)
+		}
+		fmt.Println(string(output))
+		return
+	}
+
 	if isDoctor {
 		runDoctor(dbConfigs)
 		return
@@ -47,22 +76,24 @@ func main() {
 		log.Println("Warning: No databases configured. Please configure at least one database in config.yaml or environment variables.")
 	}
 
+	appState.Reset()
+
 	// Conectarse a cada una de las bases de datos encontradas
 	for name, cfg := range dbConfigs {
 		log.Printf("Connecting to database '%s' (%s at %s:%s)...", name, cfg.Type, cfg.Host, cfg.Port)
 		client, err := NewDBClient(cfg)
 		if err != nil {
-			dbConnErrors[name] = err
+			appState.AddConnectionError(name, err)
 			log.Printf(" WARNING: Failed to connect to database '%s': %v. The server will continue to start, but queries to this database will fail.\n", name, err)
 			continue
 		}
-		dbClients[name] = client
+		appState.AddClient(name, client)
 		log.Println(" Connected successfully.")
 	}
 
 	// Garantizar que cerremos todas las conexiones al salir
 	defer func() {
-		for name, client := range dbClients {
+		for name, client := range appState.dbClients {
 			log.Printf("Closing connection pool for database '%s'...\n", name)
 			client.Close()
 		}
@@ -71,14 +102,28 @@ func main() {
 	// Crear el servidor MCP
 	server := mcp.NewServer(
 		&mcp.Implementation{
-			Name:    "mcp-octo-db",
-			Version: "1.0.0",
+			Name:    "octo-db",
+			Version: version,
 		},
 		nil,
 	)
 
 	// Registrar las herramientas en el servidor
 	log.Println("Registering MCP tools...")
+	registerTools(server)
+
+	// Arrancar el transporte stdio para MCP
+	log.Println("Starting octo-db server on stdio transport...")
+	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+		log.Fatalf("Server execution failed: %v\n", err)
+	}
+}
+
+func registerTools(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "server_info",
+		Description: "Return server metadata, active policies, available databases, and enabled MCP tools.",
+	}, ServerInfoHandler)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_tables",
@@ -95,7 +140,6 @@ func main() {
 		Description: "Execute a read-only SQL query (SELECT, SHOW, DESCRIBE, EXPLAIN, WITH) on the specified database and return the results as JSON.",
 	}, ReadQueryHandler)
 
-	// Registrar write_query condicionalmente según MCP_ENABLE_WRITE
 	if GlobalSettings.EnableWrite {
 		log.Println("Enabling write_query tool (write mode active)")
 		mcp.AddTool(server, &mcp.Tool{
@@ -106,7 +150,6 @@ func main() {
 		log.Println("write_query tool is disabled (read-only mode active by default)")
 	}
 
-	// Registrar nuevas herramientas de la versión Community
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_schemas",
 		Description: "List all schemas/databases in the specified database.",
@@ -118,41 +161,90 @@ func main() {
 	}, SearchTablesHandler)
 
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        "find_columns",
+		Description: "Search for likely columns by business term, such as service, quantity, total, sold, created, or date.",
+	}, FindColumnsHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "list_views",
+		Description: "List all views in the specified database and schema.",
+	}, ListViewsHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_table_sample",
 		Description: "Get a sample of rows from a table (default 10, max 100 rows).",
 	}, GetTableSampleHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "list_indexes",
+		Description: "List indexes defined on a table, including uniqueness and indexed columns.",
+	}, ListIndexesHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "list_relationships",
+		Description: "List foreign-key relationships between tables, optionally focused on a single table.",
+	}, ListRelationshipsHandler)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "explain_query",
 		Description: "Explain the execution plan of a SELECT query in the specified database.",
 	}, ExplainQueryHandler)
 
-	// Arrancar el transporte stdio para MCP
-	log.Println("Starting mcp-octo-db server on stdio transport...")
-	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-		log.Fatalf("Server execution failed: %v\n", err)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "suggest_query_plan",
+		Description: "Turn a non-technical reporting question into candidate tables, columns, joins, and filters without executing SQL.",
+	}, SuggestQueryPlanHandler)
+}
+
+func enabledToolNames() []string {
+	tools := []string{
+		"server_info",
+		"list_tables",
+		"describe_table",
+		"read_query",
+		"list_schemas",
+		"search_tables",
+		"find_columns",
+		"list_views",
+		"get_table_sample",
+		"list_indexes",
+		"list_relationships",
+		"explain_query",
+		"suggest_query_plan",
 	}
+	if GlobalSettings.EnableWrite {
+		tools = append(tools, "write_query")
+	}
+	return tools
 }
 
 func runDoctor(dbConfigs map[string]DBConfig) {
-	fmt.Println("mcp-octo-db Doctor - Configuration & Connection Diagnostics")
+	fmt.Printf("octo-db Doctor v%s - Configuration & Connection Diagnostics\n", version)
 	fmt.Println("==========================================================")
 	fmt.Printf("Global Settings:\n")
 	fmt.Printf("  Enable Write:          %t\n", GlobalSettings.EnableWrite)
 	fmt.Printf("  Max Rows:              %d\n", GlobalSettings.MaxRows)
 	fmt.Printf("  Query Timeout:         %ds\n", GlobalSettings.QueryTimeoutSeconds)
+	fmt.Printf("  Max Open Conns:        %d\n", GlobalSettings.MaxOpenConns)
+	fmt.Printf("  Max Idle Conns:        %d\n", GlobalSettings.MaxIdleConns)
+	fmt.Printf("  Conn Max Lifetime:     %ds\n", GlobalSettings.ConnMaxLifetimeSecs)
+	fmt.Printf("  Conn Max Idle Time:    %ds\n", GlobalSettings.ConnMaxIdleTimeSecs)
 	fmt.Printf("  Allowed Schemas:       %v\n", GlobalSettings.AllowedSchemas)
 	fmt.Printf("  Allowed Tables:        %v\n", GlobalSettings.AllowedTables)
 	fmt.Printf("  Denied Tables:         %v\n", GlobalSettings.DeniedTables)
 	fmt.Printf("  Log Level:             %s\n", GlobalSettings.LogLevel)
 	fmt.Printf("  Log Format:            %s\n", GlobalSettings.LogFormat)
 	fmt.Printf("  Audit Log:             %t\n", GlobalSettings.AuditLog)
+	fmt.Printf("  Enabled Tools:         %v\n", enabledToolNames())
 	fmt.Println("----------------------------------------------------------")
 
 	if len(dbConfigs) == 0 {
 		fmt.Println("FAIL: No databases configured. Please check your config.yaml or .env file.")
 		os.Exit(1)
 	}
+
+	fmt.Println("Configuration validation: OK")
+	fmt.Println("----------------------------------------------------------")
 
 	allPassed := true
 	for name, cfg := range dbConfigs {
@@ -191,4 +283,3 @@ func runDoctor(dbConfigs map[string]DBConfig) {
 		os.Exit(1)
 	}
 }
-

@@ -1,5 +1,5 @@
 # Binaries
-mcp-octo-db
+octo-db
 *.exe
 *.exe~
 *.dll

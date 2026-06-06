@@ -1,0 +1,10 @@
+.git
+.github
+.codegraph
+.vscode
+.idea
+*.db
+*.sqlite
+*.sqlite3
+octo-db
+dist
