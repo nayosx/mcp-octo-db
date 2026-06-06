@@ -70,7 +70,8 @@ Build:
 ```bash
 git clone <your-repo-url>
 cd <your-local-folder>
-go build -o octo-db
+mkdir -p dist
+go build -o dist/octo-db .
 ```
 
 Run diagnostics:
@@ -97,7 +98,7 @@ Precedence order:
 
 ### `.env`
 
-Use [.env.example](/home/ness/Development/go/mcp_octo_db/.env.example) as a base.
+Use [.env.example](.env.example) as a base.
 
 ```env
 DB_TYPE=postgres
@@ -132,7 +133,7 @@ MCP_AUDIT_LOG=false
 
 ### `config.yaml`
 
-Use [config.yaml.example](/home/ness/Development/go/mcp_octo_db/config.yaml.example) as a base.
+Use [config.yaml.example](config.yaml.example) as a base.
 
 Supported settings:
 
@@ -313,13 +314,13 @@ Notes:
 
 ## Client Examples
 
-Ready-to-copy example configurations live in [examples/](/home/ness/Development/go/mcp_octo_db/examples):
+Ready-to-copy example configurations live in [examples/](examples/):
 
-- [Claude Desktop](/home/ness/Development/go/mcp_octo_db/examples/claude-desktop.json)
-- [Cursor](/home/ness/Development/go/mcp_octo_db/examples/cursor.json)
-- [Codex-compatible clients](/home/ness/Development/go/mcp_octo_db/examples/codex.json)
-- [Cline](/home/ness/Development/go/mcp_octo_db/examples/cline.json)
-- [Roo Code](/home/ness/Development/go/mcp_octo_db/examples/roo-code.json)
+- [Claude Desktop](examples/claude-desktop.json)
+- [Cursor](examples/cursor.json)
+- [Codex-compatible clients](examples/codex.json)
+- [Cline](examples/cline.json)
+- [Roo Code](examples/roo-code.json)
 
 Generic MCP `stdio` example:
 
@@ -369,9 +370,29 @@ Useful local checks:
 ```bash
 go test ./...
 go vet ./...
-go build ./...
-./octo-db doctor
+go build -o dist/octo-db .
+./dist/octo-db doctor
 ```
+
+### Makefile Targets
+
+You can also use the bundled `Makefile`:
+
+```bash
+make build
+make build-all
+make test
+make vet
+make checksums
+make clean
+```
+
+What they do:
+
+- `make build`: builds the local binary into `dist/octo-db`
+- `make build-all`: cross-compiles the supported release targets
+- `make checksums`: generates `dist/checksums.txt`
+- `make clean`: removes `dist/`
 
 Recommended manual smoke test after changes:
 
@@ -381,22 +402,33 @@ Recommended manual smoke test after changes:
 4. Call `suggest_query_plan` with a non-technical question
 5. Confirm `read_query` still enforces policy and row limits
 
-CI is defined in [.github/workflows/ci.yml](/home/ness/Development/go/mcp_octo_db/.github/workflows/ci.yml) and release packaging in [.github/workflows/release.yml](/home/ness/Development/go/mcp_octo_db/.github/workflows/release.yml).
+CI is defined in [.github/workflows/ci.yml](.github/workflows/ci.yml) and release packaging in [.github/workflows/release.yml](.github/workflows/release.yml).
+
+Release artifacts currently target:
+
+- Linux `amd64`
+- Linux `arm64`
+- macOS `amd64`
+- macOS `arm64`
+- Windows `amd64`
+
+Tagged releases also publish archive checksums.
 
 ## Release Checklist
 
 - run `go test ./...`
 - run `go vet ./...`
-- run `go build ./...`
+- run `make build-all`
+- run `make checksums`
 - verify `doctor` with a real local config
-- review the examples in [examples/](/home/ness/Development/go/mcp_octo_db/examples)
-- review [CHANGELOG.md](/home/ness/Development/go/mcp_octo_db/CHANGELOG.md)
+- review the examples in [examples/](examples/)
+- review [CHANGELOG.md](CHANGELOG.md)
 - tag a version like `v1.4.0`
 
 ## Changelog
 
-Release notes live in [CHANGELOG.md](/home/ness/Development/go/mcp_octo_db/CHANGELOG.md).
+Release notes live in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT. See [LICENSE](/home/ness/Development/go/mcp_octo_db/LICENSE).
+MIT. See [LICENSE](LICENSE).

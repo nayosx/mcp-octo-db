@@ -18,8 +18,14 @@ jobs:
           - goos: linux
             goarch: amd64
             archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            archive: tar.gz
           - goos: darwin
             goarch: amd64
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
             archive: tar.gz
           - goos: windows
             goarch: amd64
@@ -53,9 +59,15 @@ jobs:
             tar -czf "octo-db-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" "octo-db-${{ matrix.goos }}-${{ matrix.goarch }}"
           fi
 
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz *.zip 2>/dev/null > "checksums-${{ matrix.goos }}-${{ matrix.goarch }}.txt" || true
+
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/checksums-*.txt
