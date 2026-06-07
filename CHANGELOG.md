@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.4
+
+- Refocused positioning in the README.md with clear real-world use cases.
+- Added `agents.md` outlining project rules, including English-only documentation and no auto-commit guidelines.
+- Configured `docs/` folder to be ignored in `.gitignore`.
+
 ## v1.4.3
 
 - Hardened `read_query` with query length limits (max 65536 characters) to protect against DoS.

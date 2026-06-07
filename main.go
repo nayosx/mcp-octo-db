@@ -11,7 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const version = "1.4.3"
+const version = "1.4.4"
 
 func main() {
 	// Configurar el log para escribir a stderr (crítico para que no ensucie stdout, usado por el protocolo MCP)

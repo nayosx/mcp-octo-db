@@ -6,7 +6,7 @@
 
 `octo-db` is a Go-based Model Context Protocol server that helps AI agents inspect and query relational databases with practical guardrails for local and test environments.
 
-Current release: `v1.4.3`
+Current release: `v1.4.4`
 
 ## Why MCP Octo DB Exists
 
@@ -671,7 +671,7 @@ The distribution of `octo-db` binaries is fully automated. Whenever a new tag (m
 - verify `doctor` with a real local config
 - review the examples in [examples/](examples/)
 - review [CHANGELOG.md](CHANGELOG.md)
-- tag a version like `v1.4.3`
+- tag a version like `v1.4.4`
 
 ## Changelog
 
