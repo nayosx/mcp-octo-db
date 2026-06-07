@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.4.5
+
+- Added interactive onboarding helper subcommand `setup` to generate local `.env` configurations.
+- Separated deep technical configurations, security guidelines, client integration, and developer workflows into `documentation/`.
+- Updated README.md positioning, discoverability keywords, Mermaid architecture diagram, and comparison matrix.
+- Appended path constraint rules to `agents.md`.
+
 ## v1.4.4
 
 - Refocused positioning in the README.md with clear real-world use cases.

@@ -8,7 +8,7 @@
 
 By separating schema planning from raw query execution, `octo-db` solves the problems of token bloating, unsafe query generation, and schema blindness. It allows LLMs and AI agents (running in clients like Cursor, Cline, Claude Desktop, or Roo Code) to interact with **PostgreSQL, MySQL, MariaDB, and SQLite** databases safely and intelligently.
 
-Current release: `v1.4.4`
+Current release: `v1.4.5`
 
 ---
 
@@ -154,6 +154,26 @@ Run the built-in diagnostic tool to verify database connectivity and check your 
 ./octo-db --list-tools
 ./octo-db --print-effective-config
 ```
+
+---
+
+## Optional Setup Wizard
+
+To simplify the generation of your initial local `.env` configuration file, you can run the interactive setup assistant:
+
+```bash
+./dist/octo-db setup
+```
+
+This wizard is a **convenience onboarding helper** that:
+* Prompts you for database type, alias, credentials, and settings.
+* Validates your inputs (e.g., port numbers, required database/user names).
+* Writes a local `.env` file containing the standardized `OCTO_DB_*` environment variables.
+* Explicitly runs on your local machine—**your credentials are never sent to an AI model, stored inside client settings, or transmitted outside your system**.
+* Offers to immediately run a connection health check.
+* Prints ready-to-use configuration snippets for Cursor, Claude Desktop, Cline, Roo Code, and Codex.
+
+*Note: Manual configuration remains fully supported and documented. You can always copy `.env.example` or `config.yaml.example` and edit them manually instead.*
 
 ---
 

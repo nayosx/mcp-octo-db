@@ -11,7 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const version = "1.4.4"
+const version = "1.4.5"
 
 func main() {
 	// Configurar el log para escribir a stderr (crítico para que no ensucie stdout, usado por el protocolo MCP)
@@ -34,6 +34,12 @@ func main() {
 
 	// Obtener argumentos posicionales
 	args := flag.Args()
+
+	if len(args) > 0 && args[0] == "setup" {
+		runSetup()
+		return
+	}
+
 	isDoctor := false
 	if len(args) > 0 && args[0] == "doctor" {
 		isDoctor = true
