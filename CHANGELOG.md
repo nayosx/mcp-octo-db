@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.4.3
+
+- Hardened `read_query` with query length limits (max 65536 characters) to protect against DoS.
+- Added automatic `LIMIT` clause detection and injection for `SELECT` and `WITH` queries lacking a top-level limit.
+- Improved query validation parser/heuristics using a lightweight, dependency-free tokenizer.
+- Hardened DSN construction for PostgreSQL and MySQL/MariaDB to safely escape usernames and passwords with special characters.
+- Documented limitations of regex/tokenization-based SQL validation and the new safety features in the README.
+
 ## v1.4.0
 
 - Added operational CLI flags for `--version`, `--list-tools`, and `--print-effective-config`.

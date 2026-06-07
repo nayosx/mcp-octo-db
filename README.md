@@ -6,7 +6,7 @@
 
 `octo-db` is a Go-based Model Context Protocol server that helps AI agents inspect and query relational databases with practical guardrails for local and test environments.
 
-Current release: `v1.4.0`
+Current release: `v1.4.3`
 
 ## Why This Exists
 
@@ -377,8 +377,16 @@ To ensure the safety of your database and prevent data destruction, `octo-db` en
   ```
 
 ### Active Guardrails
-- **Row Cap Enforcement**: Responses from `read_query` and `get_table_sample` are automatically truncated to the size set in `OCTO_DB_MAX_ROWS` (default: `500`) to protect the LLM context size and prevent performance degradation.
+- **Query Length Constraints**: The server rejects any SQL query exceeding 65,536 characters to prevent Denial of Service (DoS) attacks or excessive memory usage.
+- **Auto-LIMIT Injection**: For queries that query data (`SELECT` and `WITH ... SELECT`), `octo-db` detects if a top-level `LIMIT` clause is missing. If missing, it automatically appends `LIMIT <MaxRows>` (default: `500`) to safeguard database resources *before* execution.
+- **Row Cap Enforcement**: Responses are still capped to `OCTO_DB_MAX_ROWS` (default: `500`) in the server output, ensuring the AI model context is not flooded.
 - **Schema & Table Allowlists/Denylists**: Queries targeting schemas or tables listed in `OCTO_DB_DENIED_TABLES` (or not matching `OCTO_DB_ALLOWED_TABLES` / `OCTO_DB_ALLOWED_SCHEMAS`) are rejected prior to execution.
+
+### Limitations of the SQL Validation System
+- **No AST Parsing**: The validation system does not build a full SQL Abstract Syntax Tree (AST). It uses a lightweight, dependency-free tokenizer and regular expressions. Consequently, complex dialect-specific queries, functions, or deeply nested scopes may not be perfectly understood.
+- **Heuristics for SQL Keywords**: Keywords used as identifiers (e.g., a column or table named `limit` without quotes) are evaluated using context-sensitive heuristics (such as parenthesis nesting depth and following tokens) to tell them apart from actual clauses.
+- **Dialect Incompatibilities with Trailing Clauses**: Query clauses that must succeed `LIMIT` (such as `FOR UPDATE`, `FOR SHARE`, or `INTO`) are blocked or rejected when no limit is present, since appending a limit to the end would result in database syntax errors.
+- **Procedural blocks and semicolons**: Semicolon checks are designed to restrict executions to a single SQL statement. Inline procedural code blocks containing semicolons may not be correctly validated. Always use a dedicated database user with strict read-only permissions for safety.
 
 ### Real-World Prompt-to-Query Workflows
 
@@ -633,7 +641,7 @@ The distribution of `octo-db` binaries is fully automated. Whenever a new tag (m
 - verify `doctor` with a real local config
 - review the examples in [examples/](examples/)
 - review [CHANGELOG.md](CHANGELOG.md)
-- tag a version like `v1.4.0`
+- tag a version like `v1.4.3`
 
 ## Changelog
 

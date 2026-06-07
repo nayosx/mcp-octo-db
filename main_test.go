@@ -651,3 +651,175 @@ func TestLoadConfigOctoDb(t *testing.T) {
 		t.Errorf("Expected GlobalSettings.MaxRows to be 150, got %d", GlobalSettings.MaxRows)
 	}
 }
+
+func TestAddLimitIfMissing(t *testing.T) {
+	tests := []struct {
+		name      string
+		sql       string
+		maxRows   int
+		want      string
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name:    "empty query remains unchanged",
+			sql:     "",
+			maxRows: 100,
+			want:    "",
+		},
+		{
+			name:    "whitespace query remains unchanged",
+			sql:     "   ",
+			maxRows: 100,
+			want:    "   ",
+		},
+		{
+			name:    "SHOW query remains unchanged",
+			sql:     "SHOW TABLES",
+			maxRows: 100,
+			want:    "SHOW TABLES",
+		},
+		{
+			name:    "SHOW query with semicolon remains unchanged",
+			sql:     "SHOW TABLES;",
+			maxRows: 100,
+			want:    "SHOW TABLES;",
+		},
+		{
+			name:    "SELECT without limit",
+			sql:     "SELECT * FROM users",
+			maxRows: 100,
+			want:    "SELECT * FROM users LIMIT 100",
+		},
+		{
+			name:    "SELECT with semicolon and without limit",
+			sql:     "SELECT * FROM users;",
+			maxRows: 100,
+			want:    "SELECT * FROM users LIMIT 100;",
+		},
+		{
+			name:    "SELECT with existing limit",
+			sql:     "SELECT * FROM users LIMIT 5",
+			maxRows: 100,
+			want:    "SELECT * FROM users LIMIT 5",
+		},
+		{
+			name:    "SELECT with existing limit and semicolon",
+			sql:     "SELECT * FROM users LIMIT 5;",
+			maxRows: 100,
+			want:    "SELECT * FROM users LIMIT 5;",
+		},
+		{
+			name:    "SELECT with placeholder limit (?)",
+			sql:     "SELECT * FROM users LIMIT ?",
+			maxRows: 100,
+			want:    "SELECT * FROM users LIMIT ?",
+		},
+		{
+			name:    "SELECT with placeholder limit ($1)",
+			sql:     "SELECT * FROM users LIMIT $1",
+			maxRows: 100,
+			want:    "SELECT * FROM users LIMIT $1",
+		},
+		{
+			name:    "SELECT with placeholder limit (:val)",
+			sql:     "SELECT * FROM users LIMIT :val",
+			maxRows: 100,
+			want:    "SELECT * FROM users LIMIT :val",
+		},
+		{
+			name:    "SELECT with parenthesized limit",
+			sql:     "SELECT * FROM users LIMIT (10)",
+			maxRows: 100,
+			want:    "SELECT * FROM users LIMIT (10)",
+		},
+		{
+			name:    "WITH query without limit",
+			sql:     "WITH active_users AS (SELECT * FROM users WHERE status = 'active') SELECT * FROM active_users",
+			maxRows: 100,
+			want:    "WITH active_users AS (SELECT * FROM users WHERE status = 'active') SELECT * FROM active_users LIMIT 100",
+		},
+		{
+			name:    "WITH query with limit",
+			sql:     "WITH active_users AS (SELECT * FROM users) SELECT * FROM active_users LIMIT 10",
+			maxRows: 100,
+			want:    "WITH active_users AS (SELECT * FROM users) SELECT * FROM active_users LIMIT 10",
+		},
+		{
+			name:    "Parenthesized SELECT without limit",
+			sql:     "(SELECT * FROM users)",
+			maxRows: 100,
+			want:    "(SELECT * FROM users) LIMIT 100",
+		},
+		{
+			name:      "Unbalanced parentheses (open)",
+			sql:       "SELECT * FROM users WHERE id IN (SELECT user_id FROM posts",
+			maxRows:   100,
+			wantErr:   true,
+			errSubstr: "unbalanced parentheses",
+		},
+		{
+			name:      "Unbalanced parentheses (close)",
+			sql:       "SELECT * FROM users WHERE id = 1)",
+			maxRows:   100,
+			wantErr:   true,
+			errSubstr: "unbalanced parentheses",
+		},
+		{
+			name:      "Unsafe ending (ends with WHERE)",
+			sql:       "SELECT * FROM users WHERE",
+			maxRows:   100,
+			wantErr:   true,
+			errSubstr: "ends with incomplete clause or unsafe keyword",
+		},
+		{
+			name:      "Unsafe ending (ends with UNION)",
+			sql:       "SELECT * FROM users UNION",
+			maxRows:   100,
+			wantErr:   true,
+			errSubstr: "ends with incomplete clause or unsafe keyword",
+		},
+		{
+			name:      "Unsafe keyword (INTO)",
+			sql:       "SELECT * INTO new_table FROM users",
+			maxRows:   100,
+			wantErr:   true,
+			errSubstr: "contains potentially unsafe keyword 'INTO'",
+		},
+		{
+			name:      "Unsafe keyword (SHARE)",
+			sql:       "SELECT * FROM users FOR SHARE",
+			maxRows:   100,
+			wantErr:   true,
+			errSubstr: "contains potentially unsafe keyword 'SHARE'",
+		},
+		{
+			name:      "Query length check",
+			sql:       strings.Repeat("A", 70000),
+			maxRows:   100,
+			wantErr:   true,
+			errSubstr: "exceeds the maximum allowed length",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := addLimitIfMissing(tc.sql, tc.maxRows)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
+				}
+				if !strings.Contains(err.Error(), tc.errSubstr) {
+					t.Fatalf("expected error containing %q, got %q", tc.errSubstr, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if got != tc.want {
+					t.Fatalf("expected %q, got %q", tc.want, got)
+				}
+			}
+		})
+	}
+}

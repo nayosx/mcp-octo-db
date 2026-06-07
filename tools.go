@@ -425,6 +425,192 @@ func validateReadOnlySQL(sql string) error {
 	return validateQuerySafety(sql)
 }
 
+// Token represents a SQL token for our lightweight tokenizer.
+type sqlToken struct {
+	text  string
+	upper string
+}
+
+// tokenizeSQL splits a SQL string into tokens.
+// It is designed to be lightweight and does not require heavy parser dependencies.
+// Note: SQL literals and comments should generally be stripped before tokenization.
+func tokenizeSQL(sql string) []sqlToken {
+	var tokens []sqlToken
+	var current strings.Builder
+
+	for i := 0; i < len(sql); i++ {
+		ch := sql[i]
+		if ch == '(' || ch == ')' || ch == ';' || ch == ',' {
+			if current.Len() > 0 {
+				t := current.String()
+				tokens = append(tokens, sqlToken{text: t, upper: strings.ToUpper(t)})
+				current.Reset()
+			}
+			t := string(ch)
+			tokens = append(tokens, sqlToken{text: t, upper: t})
+		} else if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			if current.Len() > 0 {
+				t := current.String()
+				tokens = append(tokens, sqlToken{text: t, upper: strings.ToUpper(t)})
+				current.Reset()
+			}
+		} else {
+			current.WriteByte(ch)
+		}
+	}
+	if current.Len() > 0 {
+		t := current.String()
+		tokens = append(tokens, sqlToken{text: t, upper: strings.ToUpper(t)})
+	}
+	return tokens
+}
+
+func isNumberOrPlaceholder(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	if s[0] == '?' || s[0] == '$' || s[0] == ':' {
+		return true
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// hasTopLevelLimit checks if there is a LIMIT clause at the top-level (nesting depth 0).
+// It verifies that LIMIT is followed by a number or parameter placeholder to distinguish
+// it from columns or tables named "limit".
+func hasTopLevelLimit(tokens []sqlToken) bool {
+	depth := 0
+	for i, t := range tokens {
+		if t.upper == "(" {
+			depth++
+		} else if t.upper == ")" {
+			depth--
+		} else if depth == 0 && t.upper == "LIMIT" {
+			if i+1 < len(tokens) {
+				next := tokens[i+1].upper
+				if isNumberOrPlaceholder(next) {
+					return true
+				}
+				if next == "(" && i+2 < len(tokens) {
+					if isNumberOrPlaceholder(tokens[i+2].upper) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// LIMITATIONS OF THE REGEX / TOKENIZATION SYSTEM:
+// 1. AST absence: It does not build a full Abstract Syntax Tree (AST), so dialect-specific edge cases,
+//    nested query scopes, or complex expressions might not be fully parsed.
+// 2. Keyword/Identifier confusion: If columns or aliases are named after SQL keywords (e.g. "limit"),
+//    heuristics (such as checking parentheses nesting and adjacent tokens) are used to distinguish
+//    them. Unquoted keywords as identifiers may occasionally lead to false positives or negatives.
+// 3. Trailing clauses: Queries with trailing locking/dialect clauses (e.g. FOR UPDATE, FOR SHARE, INTO OUTFILE)
+//    must be blocked or handled with care. Appending LIMIT after such clauses would cause syntax errors.
+//    Thus, we proactively detect unsafe keywords and reject those queries instead of adding LIMIT.
+// 4. Multiple statement checks: Semicolon splitting is basic and handles standard SQL queries.
+//    Complex procedural blocks or nested strings containing semicolons could be misclassified.
+func addLimitIfMissing(sql string, maxRows int) (string, error) {
+	// 1. Proteger contra longitud excesiva de la consulta (DoS / desbordamiento)
+	if len(sql) > 65536 {
+		return "", fmt.Errorf("query length (%d) exceeds the maximum allowed length of 65536 characters", len(sql))
+	}
+
+	trimmed := strings.TrimSpace(sql)
+	if trimmed == "" {
+		return sql, nil
+	}
+
+	// Guardar y remover punto y coma al final si existe
+	hasSemicolon := false
+	if strings.HasSuffix(trimmed, ";") {
+		trimmed = strings.TrimSuffix(trimmed, ";")
+		trimmed = strings.TrimSpace(trimmed)
+		hasSemicolon = true
+	}
+
+	tokens := tokenizeSQL(trimmed)
+
+	// Validar balance de paréntesis
+	depth := 0
+	for _, t := range tokens {
+		if t.upper == "(" {
+			depth++
+		} else if t.upper == ")" {
+			depth--
+			if depth < 0 {
+				return "", fmt.Errorf("unbalanced parentheses: closed parenthesis without opening one")
+			}
+		}
+	}
+	if depth != 0 {
+		return "", fmt.Errorf("unbalanced parentheses: unclosed opening parenthesis")
+	}
+
+	if len(tokens) == 0 {
+		return "", fmt.Errorf("empty query tokens")
+	}
+
+	// Solo procesar si el primer token que no sea "(" es SELECT o WITH
+	firstNonParen := ""
+	for _, t := range tokens {
+		if t.upper != "(" {
+			firstNonParen = t.upper
+			break
+		}
+	}
+	if firstNonParen != "SELECT" && firstNonParen != "WITH" {
+		if hasSemicolon {
+			return trimmed + ";", nil
+		}
+		return trimmed, nil
+	}
+
+	// Si ya tiene un LIMIT a nivel superior, retornar tal cual
+	if hasTopLevelLimit(tokens) {
+		if hasSemicolon {
+			return trimmed + ";", nil
+		}
+		return trimmed, nil
+	}
+
+	// Rechazar si contiene palabras clave incompatibles con agregar un LIMIT al final
+	for _, t := range tokens {
+		if t.upper == "INTO" || t.upper == "SHARE" {
+			return "", fmt.Errorf("cannot safely add LIMIT clause: query contains potentially unsafe keyword '%s'", t.text)
+		}
+	}
+
+	// Comprobar que el último token no sea un keyword o operador que invalide la sintaxis al agregar LIMIT
+	lastToken := tokens[len(tokens)-1].upper
+	unsafeEndings := map[string]bool{
+		"UNION": true, "INTERSECT": true, "EXCEPT": true,
+		"AND": true, "OR": true, "NOT": true, "WHERE": true,
+		"FROM": true, "JOIN": true, "ON": true, "USING": true,
+		"ORDER": true, "GROUP": true, "BY": true, "HAVING": true,
+		"FOR": true, "UPDATE": true, "SHARE": true, "INTO": true,
+		",": true, "(": true,
+	}
+	if unsafeEndings[lastToken] {
+		return "", fmt.Errorf("cannot safely add LIMIT clause: query ends with incomplete clause or unsafe keyword '%s'", tokens[len(tokens)-1].text)
+	}
+
+	// Construir consulta con LIMIT
+	newSQL := fmt.Sprintf("%s LIMIT %d", trimmed, maxRows)
+	if hasSemicolon {
+		newSQL += ";"
+	}
+	return newSQL, nil
+}
+
 func isSchemaAllowed(schema string, dbType string) bool {
 	if len(GlobalSettings.AllowedSchemas) == 0 {
 		return true
@@ -814,6 +1000,14 @@ func ReadQueryHandler(ctx context.Context, req *mcp.CallToolRequest, args ReadQu
 		return textResult(fmt.Sprintf("Error: %v", err)), nil, nil
 	}
 
+	// Proteger contra longitud excesiva y asegurar cláusula LIMIT en SELECT/WITH
+	limitedSQL, err := addLimitIfMissing(args.SQL, GlobalSettings.MaxRows)
+	if err != nil {
+		logToolCall(requestID, "read_query", args, 0, err, 0, false)
+		return textResult(fmt.Sprintf("Security Error: %v", err)), nil, nil
+	}
+	args.SQL = limitedSQL
+
 	// Validación básica de consulta de lectura
 	cleanSQL := strings.TrimSpace(strings.ToUpper(args.SQL))
 	if !strings.HasPrefix(cleanSQL, "SELECT") &&
@@ -880,6 +1074,13 @@ type WriteQueryArgs struct {
 func WriteQueryHandler(ctx context.Context, req *mcp.CallToolRequest, args WriteQueryArgs) (*mcp.CallToolResult, any, error) {
 	startTime := time.Now()
 	requestID := nextRequestID()
+
+	// Proteger contra longitud excesiva de la consulta
+	if len(args.SQL) > 65536 {
+		errSize := fmt.Errorf("query length (%d) exceeds the maximum allowed length of 65536 characters", len(args.SQL))
+		logToolCall(requestID, "write_query", args, 0, errSize, 0, false)
+		return textResult(fmt.Sprintf("Security Error: %v", errSize)), nil, nil
+	}
 
 	// Enforzar validación de modo de escritura
 	if !GlobalSettings.EnableWrite {
@@ -1118,6 +1319,14 @@ type ExplainQueryArgs struct {
 func ExplainQueryHandler(ctx context.Context, req *mcp.CallToolRequest, args ExplainQueryArgs) (*mcp.CallToolResult, any, error) {
 	startTime := time.Now()
 	requestID := nextRequestID()
+
+	// Proteger contra longitud excesiva de la consulta
+	if len(args.SQL) > 65536 {
+		errSize := fmt.Errorf("query length (%d) exceeds the maximum allowed length of 65536 characters", len(args.SQL))
+		logToolCall(requestID, "explain_query", args, 0, errSize, 0, false)
+		return textResult(fmt.Sprintf("Security Error: %v", errSize)), nil, nil
+	}
+
 	client, err := getClient(args.DBName)
 	if err != nil {
 		return textResult(fmt.Sprintf("Error: %v", err)), nil, nil
