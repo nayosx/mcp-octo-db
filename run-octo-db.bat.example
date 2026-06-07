@@ -1,0 +1,40 @@
+@echo off
+:: ==============================================================================
+:: run-octo-db.bat.example
+::
+:: Wrapper script for running the octo-db MCP server on Windows.
+::
+:: Why is this used?
+:: -----------------
+:: Windows MCP clients (like Claude Desktop, Cursor, Cline, etc.) run the MCP
+:: server as a background process. Setting environment variables directly inside
+:: their JSON configuration files can be difficult or expose passwords.
+:: This batch script reads your secure .env file, sets the environment variables,
+:: and launches the octo-db.exe binary.
+::
+:: How to adapt it to your environment:
+:: ------------------------------------
+:: 1. Copy this file to a safe location (e.g., next to your config or binary):
+::    copy run-octo-db.bat.example run-octo-db.bat
+:: 2. Update the paths below:
+::    - Replace "C:\path\to\config\.env" with the absolute path to your .env file.
+::    - Replace "C:\path\to\octo-db.exe" with the absolute path to your octo-db.exe binary.
+:: ==============================================================================
+
+:: Load and set variables from the .env file
+if exist "C:\path\to\config\.env" (
+    for /f "usebackq tokens=1,* delims==" %%i in ("C:\path\to\config\.env") do (
+        :: Skip comments and empty lines
+        set "line=%%i"
+        if not "%%i"=="" (
+            if not "!line:~0,1!"=="#" (
+                set "%%i=%%j"
+            )
+        )
+    )
+) else (
+    echo WARNING: .env file not found at the specified path.
+)
+
+:: Execute the octo-db binary forwarding all command line arguments
+"C:\path\to\octo-db.exe" %*

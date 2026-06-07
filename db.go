@@ -74,6 +74,7 @@ type DBConfig struct {
 func DiscoverDBs() (map[string]DBConfig, error) {
 	configs := make(map[string]DBConfig)
 
+	// 1. Escaneo de variables heredadas DB_NAME y DB_NAME_
 	for _, env := range os.Environ() {
 		parts := strings.SplitN(env, "=", 2)
 		if len(parts) != 2 {
@@ -86,6 +87,33 @@ func DiscoverDBs() (map[string]DBConfig, error) {
 			suffix := strings.TrimPrefix(key, "DB_NAME_")
 			if suffix != "" {
 				configs[strings.ToLower(suffix)] = buildConfigForSuffix(suffix)
+			}
+		}
+	}
+
+	// 2. Escaneo de variables con formato OCTO_DB_<suffix>_DATABASE y OCTO_DB_DEFAULT
+	defaultDbSuffix := ""
+	if defVal, ok := os.LookupEnv("OCTO_DB_DEFAULT"); ok {
+		defaultDbSuffix = strings.TrimSpace(defVal)
+	}
+
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := parts[0]
+		if strings.HasPrefix(key, "OCTO_DB_") && strings.HasSuffix(key, "_DATABASE") {
+			suffix := strings.TrimPrefix(key, "OCTO_DB_")
+			suffix = strings.TrimSuffix(suffix, "_DATABASE")
+			if suffix != "" && suffix != "DEFAULT" {
+				cfg := buildConfigForOctoDb(suffix)
+				name := strings.ToLower(suffix)
+				configs[name] = cfg
+				// Si esta es la base de datos por defecto, o si no se especificó un default y se llama "main"
+				if strings.EqualFold(suffix, defaultDbSuffix) || (defaultDbSuffix == "" && name == "main") {
+					configs["default"] = cfg
+				}
 			}
 		}
 	}
@@ -107,6 +135,65 @@ func buildConfigForSuffix(suffix string) DBConfig {
 		Password: getEnv(fmt.Sprintf("DB_PASSWORD%s", s), ""),
 		Name:     getEnv(fmt.Sprintf("DB_NAME%s", s), ""),
 		SSLMode:  getEnv(fmt.Sprintf("DB_SSLMODE%s", s), "disable"),
+	}
+
+	if cfg.Port == "" {
+		if strings.ToLower(cfg.Type) == "postgres" || strings.ToLower(cfg.Type) == "postgresql" {
+			cfg.Port = "5432"
+		} else {
+			cfg.Port = "3306"
+		}
+	}
+
+	return cfg
+}
+
+func buildConfigForOctoDb(suffix string) DBConfig {
+	s := strings.ToUpper(suffix)
+
+	driver := getEnv(fmt.Sprintf("OCTO_DB_%s_DRIVER", s), "")
+	if driver == "" {
+		driver = getEnv(fmt.Sprintf("DB_TYPE_%s", s), "postgres")
+	}
+
+	host := getEnv(fmt.Sprintf("OCTO_DB_%s_HOST", s), "")
+	if host == "" {
+		host = getEnv(fmt.Sprintf("DB_HOST_%s", s), "localhost")
+	}
+
+	port := getEnv(fmt.Sprintf("OCTO_DB_%s_PORT", s), "")
+	if port == "" {
+		port = getEnv(fmt.Sprintf("DB_PORT_%s", s), "")
+	}
+
+	dbName := getEnv(fmt.Sprintf("OCTO_DB_%s_DATABASE", s), "")
+	if dbName == "" {
+		dbName = getEnv(fmt.Sprintf("DB_NAME_%s", s), "")
+	}
+
+	user := getEnv(fmt.Sprintf("OCTO_DB_%s_USER", s), "")
+	if user == "" {
+		user = getEnv(fmt.Sprintf("DB_USER_%s", s), "")
+	}
+
+	password := getEnv(fmt.Sprintf("OCTO_DB_%s_PASSWORD", s), "")
+	if password == "" {
+		password = getEnv(fmt.Sprintf("DB_PASSWORD_%s", s), "")
+	}
+
+	sslMode := getEnv(fmt.Sprintf("OCTO_DB_%s_SSLMODE", s), "")
+	if sslMode == "" {
+		sslMode = getEnv(fmt.Sprintf("DB_SSLMODE_%s", s), "disable")
+	}
+
+	cfg := DBConfig{
+		Type:     driver,
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		Name:     dbName,
+		SSLMode:  sslMode,
 	}
 
 	if cfg.Port == "" {

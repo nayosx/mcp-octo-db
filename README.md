@@ -52,6 +52,15 @@ What it does not do:
 
 Use it as a developer-facing connector with safety rails, not as your only production control plane.
 
+## Security Recommendations
+
+To ensure safe operation of the MCP server, please follow these guidelines:
+- **Keep `.env` files secured**: Never commit `.env` or configurations with real credentials to your repository. Ensure `.env` is listed in your `.gitignore` file.
+- **Do not share credentials**: Never store plain secrets or database passwords in shared MCP client configuration files (e.g., `claude_desktop_config.json`).
+- **Use read-only database users**: Create a dedicated database user for the MCP server that only has read permissions (`SELECT`) on the necessary tables and schemas.
+- **Limit write permissions**: Keep `OCTO_DB_ENABLE_WRITE` set to `false` unless write capabilities are strictly necessary. If enabled, restrict the database user permissions to the minimal set of write privileges needed.
+- **Review queries before execution**: Be cautious and verify query plans or suggest plans before executing raw SQL writes or complex reads that could lock tables or impact performance.
+
 ## Quick Start
 
 Requirements:
@@ -98,38 +107,44 @@ Precedence order:
 
 ### `.env`
 
-Use [.env.example](.env.example) as a base.
+Use [.env.example](.env.example) as a base. The environment variables now use the `OCTO_DB_` prefix as primary, but fully support legacy `DB_` / `MCP_` variables for backward compatibility.
 
 ```env
-DB_TYPE=postgres
-DB_HOST=127.0.0.1
-DB_PORT=5432
-DB_USER=appuser
-DB_PASSWORD=change_me
-DB_NAME=appdb
-DB_SSLMODE=disable
+# Default connection suffix
+OCTO_DB_DEFAULT=main
 
-DB_TYPE_ANALYTICS=mysql
-DB_HOST_ANALYTICS=127.0.0.1
-DB_PORT_ANALYTICS=3306
-DB_USER_ANALYTICS=analytics_user
-DB_PASSWORD_ANALYTICS=change_me
-DB_NAME_ANALYTICS=analytics_db
+# Default Connection settings (main)
+OCTO_DB_MAIN_DRIVER=mysql
+OCTO_DB_MAIN_HOST=localhost
+OCTO_DB_MAIN_PORT=3306
+OCTO_DB_MAIN_DATABASE=my_database
+OCTO_DB_MAIN_USER=my_user
+OCTO_DB_MAIN_PASSWORD=change_me
+OCTO_DB_MAIN_SSLMODE=disable
 
-MCP_ENABLE_WRITE=false
-MCP_MAX_ROWS=500
-MCP_QUERY_TIMEOUT_SECONDS=10
-MCP_MAX_OPEN_CONNS=10
-MCP_MAX_IDLE_CONNS=5
-MCP_CONN_MAX_LIFETIME_SECONDS=300
-MCP_CONN_MAX_IDLE_TIME_SECONDS=180
-MCP_ALLOWED_SCHEMAS=public,analytics
-MCP_ALLOWED_TABLES=users,orders
-MCP_DENIED_TABLES=secrets,audit_backups
-MCP_LOG_LEVEL=info
-MCP_LOG_FORMAT=text
-MCP_AUDIT_LOG=false
+# MCP Server settings
+OCTO_DB_ENABLE_WRITE=false
+OCTO_DB_MAX_ROWS=500
+OCTO_DB_QUERY_TIMEOUT_SECONDS=10
+OCTO_DB_MAX_OPEN_CONNS=10
+OCTO_DB_MAX_IDLE_CONNS=5
+OCTO_DB_CONN_MAX_LIFETIME_SECONDS=300
+OCTO_DB_CONN_MAX_IDLE_TIME_SECONDS=180
+OCTO_DB_ALLOWED_SCHEMAS=public,analytics
+OCTO_DB_ALLOWED_TABLES=users,orders
+OCTO_DB_DENIED_TABLES=secrets,audit_backups
+OCTO_DB_LOG_LEVEL=info
+OCTO_DB_LOG_FORMAT=text
+OCTO_DB_AUDIT_LOG=false
 ```
+
+#### Why the `OCTO_DB_` prefix?
+
+Using the structured prefix `OCTO_DB_<ALIAS>_<PROPERTY>` provides three critical benefits:
+
+- **Multi-Database Support**: Rather than being limited to a single generic configuration (like `DB_HOST`), you can define multiple target databases in the same environment by changing the middle `<ALIAS>` placeholder (e.g., `OCTO_DB_MAIN_...` vs. `OCTO_DB_ANALYTICS_...`). The server automatically scans for environment variables ending with `_DATABASE` and registers them as independent database aliases.
+- **Namespacing & Conflict Avoidance**: Standard environment names like `DB_HOST` or `DB_USER` are widely used by other applications, Docker environments, and libraries. Standardizing on the `OCTO_DB_` prefix ensures that this MCP server's configuration never clashes with or overrides other environment variables.
+- **Configuration Clarity**: It groups all configurations related to this MCP server (such as global policies `OCTO_DB_ENABLE_WRITE`, timeouts, and connection strings) under a single searchable prefix (e.g., `env | grep OCTO_DB_`).
 
 ### `config.yaml`
 
@@ -202,25 +217,24 @@ settings:
 
 ## MCP Tools
 
-Always available:
+The server registers and exposes the following tools:
 
-- `server_info`
-- `list_schemas`
-- `list_tables`
-- `list_views`
-- `search_tables`
-- `find_columns`
-- `describe_table`
-- `list_indexes`
-- `list_relationships`
-- `get_table_sample`
-- `read_query`
-- `explain_query`
-- `suggest_query_plan`
-
-Conditionally available:
-
-- `write_query` when `enable_write=true`
+| Tool | Description | Read Only | Risk Level |
+| --- | --- | --- | --- |
+| `server_info` | Return server metadata, active policies, available databases, and enabled MCP tools. | Yes | Low |
+| `list_schemas` | List all schemas/databases in the specified database. | Yes | Low |
+| `list_tables` | List all tables in the specified database and schema. | Yes | Low |
+| `list_views` | List all views in the specified database and schema. | Yes | Low |
+| `search_tables` | Search for tables matching a query pattern (e.g. `%users%`) in the specified database. | Yes | Low |
+| `find_columns` | Search for likely columns by business term, such as service, quantity, total, sold, created, or date. | Yes | Low |
+| `describe_table` | Show structure of a specific table, including columns, types, nullability, primary keys, and default values. | Yes | Low |
+| `list_indexes` | List indexes defined on a table, including uniqueness and indexed columns. | Yes | Low |
+| `list_relationships` | List foreign-key relationships between tables, optionally focused on a single table. | Yes | Low |
+| `get_table_sample` | Get a sample of rows from a table (default 10, max 100 rows). | Yes | Low |
+| `read_query` | Execute a read-only SQL query (`SELECT`, `SHOW`, `DESCRIBE`, `EXPLAIN`, `WITH`) on the specified database. | Yes | Medium |
+| `write_query` | Execute write operations (`INSERT`, `UPDATE`, `DELETE`, `CREATE`, `ALTER`, etc.) on the specified database (active only if `enable_write=true`). | No | High |
+| `explain_query` | Explain the execution plan of a SELECT query in the specified database. | Yes | Low |
+| `suggest_query_plan` | Turn a non-technical reporting question into candidate tables, columns, joins, and filters without executing SQL. | Yes | Low |
 
 ### Tool Notes
 
@@ -312,32 +326,86 @@ Notes:
 - `--print-effective-config` masks passwords before printing.
 - `doctor` is the quickest way to confirm connectivity and the currently active policy surface.
 
-## Client Examples
+## Verify Installation
 
-Ready-to-copy example configurations live in [examples/](examples/):
+To verify that the MCP server is working correctly and properly registered by your client:
 
-- [Claude Desktop](examples/claude-desktop.json)
-- [Cursor](examples/cursor.json)
-- [Codex-compatible clients](examples/codex.json)
-- [Cline](examples/cline.json)
-- [Roo Code](examples/roo-code.json)
+1. **Verify server discovery using Codex CLI (or equivalent tool):**
+   ```bash
+   codex mcp list
+   ```
+   *This command should list `octo-db` as one of the active, connected MCP servers.*
 
-Generic MCP `stdio` example:
+2. **Test functionality using diagnostic prompts in your MCP client:**
+   
+   - *Prompt 1:*
+     ```text
+     Use octo_db and list available tables.
+     ```
+   - *Prompt 2:*
+     ```text
+     Use octo_db and describe the users table.
+     ```
+   - *Prompt 3:*
+     ```text
+     Use octo_db and explain this SQL query.
+     ```
+
+## MCP Client Configuration
+
+Here are example configurations to integrate the `octo-db` server with different Model Context Protocol clients.
+
+### Wrapper Script
+
+Using a wrapper script (like `run-octo-db.sh` for Linux/macOS or `run-octo-db.bat` for Windows) is highly recommended for security and ease of setup.
+
+* **Why it is used**: MCP clients execute servers in their own runtime environments where setting shell variables can be difficult. The wrapper script sources a local, untracked `.env` file containing secrets, keeping them secure, and then starts the `octo-db` server.
+* **Advantages**: It prevents sensitive database passwords and usernames from being stored directly in your MCP client configuration files (which are stored in plain text in app configuration directories and might be backed up/shared).
+* **How to adapt it**:
+  - **Linux/macOS**: Copy `run-octo-db.sh.example` to `run-octo-db.sh`, make it executable (`chmod +x run-octo-db.sh`), and update the absolute paths pointing to your local `.env` and `octo-db` binary.
+  - **Windows**: Copy `run-octo-db.bat.example` to `run-octo-db.bat` and update the absolute paths pointing to your local `.env` file and `octo-db.exe` binary.
+
+### Codex Configuration
+
+Add the following to your Codex configuration file (typically in `.codex` configuration folder or `codex.toml`):
+
+```toml
+[mcp_servers.octo_db]
+command = "/path/to/run-octo-db.sh"
+args = []
+```
+
+### Claude Desktop Configuration
+
+Add the following to your Claude Desktop configuration file (e.g., `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ```json
 {
   "mcpServers": {
-    "octo-db": {
-      "command": "/absolute/path/to/octo-db",
-      "args": [
-        "--config",
-        "/absolute/path/to/config.yaml"
-      ],
-      "cwd": "/absolute/path/to/project"
+    "octo_db": {
+      "command": "/path/to/run-octo-db.sh"
     }
   }
 }
 ```
+
+### Cursor / Cline / Roo Code Configuration
+
+Configure the server in the client's MCP configuration settings using a generic wrapper path:
+
+```json
+{
+  "mcpServers": {
+    "octo_db": {
+      "command": "/path/to/run-octo-db.sh",
+      "args": [],
+      "disabled": false
+    }
+  }
+}
+```
+
+*Note: For Cursor, you can also add this server visually through the settings UI by choosing type `command`, entering `octo_db` as name, and specifying the wrapper script `/path/to/run-octo-db.sh` as the command.*
 
 ## Docker
 
@@ -404,15 +472,29 @@ Recommended manual smoke test after changes:
 
 CI is defined in [.github/workflows/ci.yml](.github/workflows/ci.yml) and release packaging in [.github/workflows/release.yml](.github/workflows/release.yml).
 
-Release artifacts currently target:
+## Distribution
 
-- Linux `amd64`
-- Linux `arm64`
-- macOS `amd64`
-- macOS `arm64`
-- Windows `amd64`
+The distribution of `octo-db` binaries is fully automated. Whenever a new tag (matching `v*`) is pushed, the Release GitHub Action automatically compiles and bundles static binaries for major operating systems and architectures.
 
-Tagged releases also publish archive checksums.
+### Supported Platform Targets
+- **Linux**: `amd64` and `arm64` (packaged as `.tar.gz` archives)
+- **macOS**: `amd64` and `arm64` (packaged as `.tar.gz` archives)
+- **Windows**: `amd64` (packaged as `.zip` archive)
+
+### How to obtain and run release binaries
+1. Navigate to the **Releases** page of the repository on GitHub.
+2. Download the compressed archive matching your operating system and architecture.
+3. Extract the downloaded archive:
+   - For Linux/macOS: `tar -xzf octo-db-vX.Y.Z-goos-goarch.tar.gz`
+   - For Windows: Extract the `.zip` file using your file manager or PowerShell.
+4. (Optional but recommended) Verify release integrity by checking the SHA-256 checksums published alongside the release archives:
+   ```bash
+   sha256sum --check checksums-goos-goarch.txt
+   ```
+5. Run the binary inside the extracted folder:
+   ```bash
+   ./octo-db --version
+   ```
 
 ## Release Checklist
 

@@ -595,3 +595,59 @@ func mapsKeys[K comparable, V any](m map[K]V) []K {
 	}
 	return keys
 }
+
+func TestLoadConfigOctoDb(t *testing.T) {
+	// Setup custom environment variables
+	os.Setenv("OCTO_DB_DEFAULT", "main")
+	os.Setenv("OCTO_DB_MAIN_DRIVER", "mysql")
+	os.Setenv("OCTO_DB_MAIN_HOST", "localhost")
+	os.Setenv("OCTO_DB_MAIN_PORT", "3306")
+	os.Setenv("OCTO_DB_MAIN_DATABASE", "my_database")
+	os.Setenv("OCTO_DB_MAIN_USER", "my_user")
+	os.Setenv("OCTO_DB_MAIN_PASSWORD", "change_me")
+	os.Setenv("OCTO_DB_ENABLE_WRITE", "true")
+	os.Setenv("OCTO_DB_MAX_ROWS", "150")
+
+	defer func() {
+		os.Unsetenv("OCTO_DB_DEFAULT")
+		os.Unsetenv("OCTO_DB_MAIN_DRIVER")
+		os.Unsetenv("OCTO_DB_MAIN_HOST")
+		os.Unsetenv("OCTO_DB_MAIN_PORT")
+		os.Unsetenv("OCTO_DB_MAIN_DATABASE")
+		os.Unsetenv("OCTO_DB_MAIN_USER")
+		os.Unsetenv("OCTO_DB_MAIN_PASSWORD")
+		os.Unsetenv("OCTO_DB_ENABLE_WRITE")
+		os.Unsetenv("OCTO_DB_MAX_ROWS")
+	}()
+
+	// Load config without YAML file (it should load settings and databases from env only)
+	dbConfigs, err := LoadConfig("", "")
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	mainCfg, ok := dbConfigs["main"]
+	if !ok {
+		t.Fatal("Expected 'main' database to be configured")
+	}
+
+	if mainCfg.Type != "mysql" || mainCfg.Host != "localhost" || mainCfg.Port != "3306" || mainCfg.Name != "my_database" || mainCfg.User != "my_user" || mainCfg.Password != "change_me" {
+		t.Errorf("Unexpected database configuration: %+v", mainCfg)
+	}
+
+	defaultCfg, ok := dbConfigs["default"]
+	if !ok {
+		t.Fatal("Expected 'default' database alias to be configured since it maps to default")
+	}
+	if defaultCfg.Name != "my_database" {
+		t.Errorf("Expected default database to map to main database config, got %+v", defaultCfg)
+	}
+
+	if !GlobalSettings.EnableWrite {
+		t.Error("Expected GlobalSettings.EnableWrite to be true")
+	}
+
+	if GlobalSettings.MaxRows != 150 {
+		t.Errorf("Expected GlobalSettings.MaxRows to be 150, got %d", GlobalSettings.MaxRows)
+	}
+}

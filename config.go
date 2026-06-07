@@ -131,14 +131,14 @@ func LoadConfig(envPath, configPath string) (map[string]DBConfig, error) {
 
 	// 4. Resolver Settings (Precedencia: Env > YAML > Defaults)
 	// Enable Write
-	if val, ok := os.LookupEnv("MCP_ENABLE_WRITE"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_ENABLE_WRITE", "MCP_ENABLE_WRITE"); ok {
 		GlobalSettings.EnableWrite = strings.ToLower(val) == "true"
 	} else if yamlLoaded && yamlCfg.Settings.EnableWrite != nil {
 		GlobalSettings.EnableWrite = *yamlCfg.Settings.EnableWrite
 	}
 
 	// Max Rows
-	if val, ok := os.LookupEnv("MCP_MAX_ROWS"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_MAX_ROWS", "MCP_MAX_ROWS"); ok {
 		if i, err := strconv.Atoi(val); err == nil {
 			GlobalSettings.MaxRows = i
 		}
@@ -147,7 +147,7 @@ func LoadConfig(envPath, configPath string) (map[string]DBConfig, error) {
 	}
 
 	// Query Timeout
-	if val, ok := os.LookupEnv("MCP_QUERY_TIMEOUT_SECONDS"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_QUERY_TIMEOUT_SECONDS", "MCP_QUERY_TIMEOUT_SECONDS"); ok {
 		if i, err := strconv.Atoi(val); err == nil {
 			GlobalSettings.QueryTimeoutSeconds = i
 		}
@@ -156,7 +156,7 @@ func LoadConfig(envPath, configPath string) (map[string]DBConfig, error) {
 	}
 
 	// Pool settings
-	if val, ok := os.LookupEnv("MCP_MAX_OPEN_CONNS"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_MAX_OPEN_CONNS", "MCP_MAX_OPEN_CONNS"); ok {
 		if i, err := strconv.Atoi(val); err == nil {
 			GlobalSettings.MaxOpenConns = i
 		}
@@ -164,7 +164,7 @@ func LoadConfig(envPath, configPath string) (map[string]DBConfig, error) {
 		GlobalSettings.MaxOpenConns = *yamlCfg.Settings.MaxOpenConns
 	}
 
-	if val, ok := os.LookupEnv("MCP_MAX_IDLE_CONNS"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_MAX_IDLE_CONNS", "MCP_MAX_IDLE_CONNS"); ok {
 		if i, err := strconv.Atoi(val); err == nil {
 			GlobalSettings.MaxIdleConns = i
 		}
@@ -172,7 +172,7 @@ func LoadConfig(envPath, configPath string) (map[string]DBConfig, error) {
 		GlobalSettings.MaxIdleConns = *yamlCfg.Settings.MaxIdleConns
 	}
 
-	if val, ok := os.LookupEnv("MCP_CONN_MAX_LIFETIME_SECONDS"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_CONN_MAX_LIFETIME_SECONDS", "MCP_CONN_MAX_LIFETIME_SECONDS"); ok {
 		if i, err := strconv.Atoi(val); err == nil {
 			GlobalSettings.ConnMaxLifetimeSecs = i
 		}
@@ -180,7 +180,7 @@ func LoadConfig(envPath, configPath string) (map[string]DBConfig, error) {
 		GlobalSettings.ConnMaxLifetimeSecs = *yamlCfg.Settings.ConnMaxLifetimeSecs
 	}
 
-	if val, ok := os.LookupEnv("MCP_CONN_MAX_IDLE_TIME_SECONDS"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_CONN_MAX_IDLE_TIME_SECONDS", "MCP_CONN_MAX_IDLE_TIME_SECONDS"); ok {
 		if i, err := strconv.Atoi(val); err == nil {
 			GlobalSettings.ConnMaxIdleTimeSecs = i
 		}
@@ -189,42 +189,42 @@ func LoadConfig(envPath, configPath string) (map[string]DBConfig, error) {
 	}
 
 	// Allowed Schemas
-	if val, ok := os.LookupEnv("MCP_ALLOWED_SCHEMAS"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_ALLOWED_SCHEMAS", "MCP_ALLOWED_SCHEMAS"); ok {
 		GlobalSettings.AllowedSchemas = parseCommaList(val)
 	} else if yamlLoaded && len(yamlCfg.Settings.AllowedSchemas) > 0 {
 		GlobalSettings.AllowedSchemas = yamlCfg.Settings.AllowedSchemas
 	}
 
 	// Allowed Tables
-	if val, ok := os.LookupEnv("MCP_ALLOWED_TABLES"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_ALLOWED_TABLES", "MCP_ALLOWED_TABLES"); ok {
 		GlobalSettings.AllowedTables = parseCommaList(val)
 	} else if yamlLoaded && len(yamlCfg.Settings.AllowedTables) > 0 {
 		GlobalSettings.AllowedTables = yamlCfg.Settings.AllowedTables
 	}
 
 	// Denied Tables
-	if val, ok := os.LookupEnv("MCP_DENIED_TABLES"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_DENIED_TABLES", "MCP_DENIED_TABLES"); ok {
 		GlobalSettings.DeniedTables = parseCommaList(val)
 	} else if yamlLoaded && len(yamlCfg.Settings.DeniedTables) > 0 {
 		GlobalSettings.DeniedTables = yamlCfg.Settings.DeniedTables
 	}
 
 	// Log Level
-	if val, ok := os.LookupEnv("MCP_LOG_LEVEL"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_LOG_LEVEL", "MCP_LOG_LEVEL"); ok {
 		GlobalSettings.LogLevel = val
 	} else if yamlLoaded && yamlCfg.Settings.LogLevel != "" {
 		GlobalSettings.LogLevel = yamlCfg.Settings.LogLevel
 	}
 
 	// Log Format
-	if val, ok := os.LookupEnv("MCP_LOG_FORMAT"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_LOG_FORMAT", "MCP_LOG_FORMAT"); ok {
 		GlobalSettings.LogFormat = val
 	} else if yamlLoaded && yamlCfg.Settings.LogFormat != "" {
 		GlobalSettings.LogFormat = yamlCfg.Settings.LogFormat
 	}
 
 	// Audit Log
-	if val, ok := os.LookupEnv("MCP_AUDIT_LOG"); ok {
+	if val, ok := lookupEnvWithFallback("OCTO_DB_AUDIT_LOG", "MCP_AUDIT_LOG"); ok {
 		GlobalSettings.AuditLog = strings.ToLower(val) == "true"
 	} else if yamlLoaded && yamlCfg.Settings.AuditLog != nil {
 		GlobalSettings.AuditLog = *yamlCfg.Settings.AuditLog
@@ -250,6 +250,15 @@ func parseCommaList(val string) []string {
 		}
 	}
 	return res
+}
+
+func lookupEnvWithFallback(keys ...string) (string, bool) {
+	for _, key := range keys {
+		if val, ok := os.LookupEnv(key); ok {
+			return val, true
+		}
+	}
+	return "", false
 }
 
 func normalizeDBConfigs(configs map[string]DBConfig) {

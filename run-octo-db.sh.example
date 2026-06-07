@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# run-octo-db.sh.example
+#
+# Wrapper script for running the octo-db MCP server.
+#
+# Why is this used?
+# -----------------
+# MCP clients (like Claude Desktop, Cursor, Cline, etc.) launch MCP servers in the
+# background. Specifying env variables directly in the client settings JSON is
+# restrictive and can expose sensitive credentials in shared configuration files.
+# Using this wrapper script allows you to load variables from a local, secured
+# .env file before executing the binary.
+#
+# Advantages vs Storing Secrets in the MCP Config:
+# ------------------------------------------------
+# 1. Security: Keeps database credentials out of your MCP client settings JSON
+#    (which are often stored in global user config folders or sometimes synced).
+# 2. Portability: Makes it easier to share client configuration templates with
+#    team members without sharing your database password.
+# 3. Convenience: Standard environment variables setup (.env file) can be
+#    managed using standard security practices (e.g., restricted file permissions).
+#
+# How to adapt it to your environment:
+# ------------------------------------
+# 1. Copy this file to a safe location (e.g., next to your config folder or octo-db binary):
+#    cp run-octo-db.sh.example run-octo-db.sh
+# 2. Make it executable:
+#    chmod +x run-octo-db.sh
+# 3. Update the paths below:
+#    - Replace '/path/to/config/.env' with the absolute path to your .env file.
+#    - Replace '/path/to/octo-db' with the absolute path to your compiled octo-db binary.
+# ==============================================================================
+
+set -euo pipefail
+
+# Enable auto-exporting of variables from the sourced file
+set -a
+source /path/to/config/.env
+set +a
+
+# Execute the octo-db binary, replacing the current shell process
+exec /path/to/octo-db "$@"
