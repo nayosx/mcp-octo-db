@@ -23,3 +23,7 @@ This repository follows strict guidelines for AI agents and coding assistants co
 ### 4. Git & Commit Rule
 * **Do not perform automatic commits or tag operations.**
 * AI agents must never stage, commit, or create Git tags unless explicitly requested by the user. By default, Git actions should be left to the user to perform manually.
+
+### 5. Path Reference Rule
+* **Always use relative paths (e.g., `./documentation/...`) instead of absolute local paths (like `/home/ness/...`) in markdown documentation, configuration files, and examples.**
+* Avoid hardcoding user-specific paths or directories inside any committed files.
