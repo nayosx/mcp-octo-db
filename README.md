@@ -297,6 +297,134 @@ Typical flow for a non-technical request:
 
 This gives the agent a chance to discover the right joins and date columns before touching production-like data.
 
+## SQL Safety & Query Guidelines
+
+To ensure the safety of your database and prevent data destruction, `octo-db` enforces strict security boundaries on the SQL queries the AI agent can execute.
+
+### What is ALLOWED in `read_query`
+- **Read-Only Statements**: `SELECT`, `SHOW`, `DESCRIBE`, and `EXPLAIN`.
+- **Joins, Aggregations & Grouping**: Complex read-only analysis is fully supported:
+  ```sql
+  SELECT c.category_name, COUNT(p.id) as total_products, AVG(p.price) as avg_price
+  FROM products p
+  INNER JOIN categories c ON p.category_id = c.id
+  WHERE p.status = 'active'
+  GROUP BY c.category_name
+  HAVING COUNT(p.id) > 5
+  ORDER BY total_products DESC;
+  ```
+- **Subqueries (Nested Selects)**:
+  ```sql
+  SELECT email, username
+  FROM users
+  WHERE id IN (
+      SELECT DISTINCT user_id 
+      FROM orders 
+      WHERE total_amount > 1000
+  );
+  ```
+- **Read-Only CTEs (Common Table Expressions)**: You can use `WITH` clauses to structure complex queries:
+  ```sql
+  WITH monthly_sales AS (
+      SELECT product_id, SUM(quantity) as total_sold
+      FROM order_items
+      GROUP BY product_id
+  )
+  SELECT p.name, ms.total_sold
+  FROM products p
+  JOIN monthly_sales ms ON p.id = ms.product_id;
+  ```
+- **Execution Plans**:
+  ```sql
+  EXPLAIN SELECT * FROM orders WHERE user_id = 123;
+  ```
+
+### What is BLOCKED in `read_query`
+- **Mutating Keywords**: Any query containing statements like `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `REPLACE`, `MERGE`, `UPSERT`, `GRANT`, `REVOKE`, `CALL`, `COPY`, `ATTACH`, `DETACH`, or `VACUUM` is immediately blocked.
+- **Schema & DDL Changes**:
+  ```sql
+  -- THIS IS BLOCKED:
+  ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT FALSE;
+  
+  -- THIS IS BLOCKED:
+  DROP TABLE audit_logs;
+  ```
+- **Mutating CTEs**: Write operations hidden inside `WITH` statements are strictly blocked:
+  ```sql
+  -- THIS IS BLOCKED:
+  WITH deleted_users AS (
+      DELETE FROM users WHERE last_login < '2025-01-01' RETURNING id
+  )
+  SELECT * FROM deleted_users;
+  ```
+- **Multi-Statement Queries**: Multiple SQL statements separated by semicolons are blocked to prevent SQL injection or stacked query attacks:
+  ```sql
+  -- THIS IS BLOCKED:
+  SELECT * FROM users; DROP TABLE products;
+  ```
+- **Privilege & DB Administration Mutations**:
+  ```sql
+  -- THIS IS BLOCKED:
+  GRANT ALL PRIVILEGES ON DATABASE appdb TO evil_user;
+  
+  -- THIS IS BLOCKED:
+  VACUUM FULL;
+  ```
+- **SQLite Database Attachments**:
+  ```sql
+  -- THIS IS BLOCKED:
+  ATTACH DATABASE '/etc/passwd' AS pwned;
+  ```
+
+### Active Guardrails
+- **Row Cap Enforcement**: Responses from `read_query` and `get_table_sample` are automatically truncated to the size set in `OCTO_DB_MAX_ROWS` (default: `500`) to protect the LLM context size and prevent performance degradation.
+- **Schema & Table Allowlists/Denylists**: Queries targeting schemas or tables listed in `OCTO_DB_DENIED_TABLES` (or not matching `OCTO_DB_ALLOWED_TABLES` / `OCTO_DB_ALLOWED_SCHEMAS`) are rejected prior to execution.
+
+### Real-World Prompt-to-Query Workflows
+
+Here is how natural language prompts from a user translate into sequential MCP tool calls and final SQL executions:
+
+#### Scenario 1: Detecting Purchase Anomalies (Fraud Analysis)
+- **User Prompt**:
+  > *"Find users who spent over 200% more this month compared to their historical monthly average, and check what categories they bought."*
+- **AI Tool Execution Chain**:
+  1. **Identify connections**: The AI calls `list_relationships(table_name="orders")` and discovers that `orders` has a foreign key to `users` and `order_items` connects `orders` to `products`.
+  2. **Verify columns**: The AI calls `find_columns(query="date")` and `find_columns(query="amount")` to confirm that dates are stored in `created_at` and amounts in `total_amount`.
+  3. **Plan and verify performance**: The AI plans a query with window functions to compute averages. To ensure it won't crash the database, it calls `explain_query` on the SQL statement.
+  4. **Fetch data safely**: Once the execution plan is confirmed to use indexes, the AI calls `read_query` to get the list of anomalies.
+- **Resulting SQL Query executed by the MCP**:
+  ```sql
+  WITH user_stats AS (
+      SELECT user_id, AVG(total_amount) as avg_historic
+      FROM orders
+      WHERE created_at < DATE_TRUNC('month', CURRENT_DATE)
+      GROUP BY user_id
+  )
+  SELECT o.user_id, o.id as order_id, o.total_amount, us.avg_historic, p.category
+  FROM orders o
+  JOIN user_stats us ON o.user_id = us.user_id
+  JOIN order_items oi ON o.id = oi.order_id
+  JOIN products p ON oi.product_id = p.id
+  WHERE o.created_at >= DATE_TRUNC('month', CURRENT_DATE)
+    AND o.total_amount > (us.avg_historic * 3);
+  ```
+
+#### Scenario 2: Schema Inspection for Backend Code Generation
+- **User Prompt**:
+  > *"Check the database structure for our users table and write a Go struct representing it, along with a secure handler."*
+- **AI Tool Execution Chain**:
+  1. **Locate the table**: The AI calls `list_tables()` or `search_tables(query="user")` to find the exact name of the table (`users`).
+  2. **Inspect the columns**: The AI calls `describe_table(table_name="users")` to get column types, nullability, and primary keys.
+  3. **Generate code**: Using the JSON structure returned by the MCP, the AI writes the Go code and creates files locally.
+- **MCP Output utilized by the AI**:
+  ```json
+  [
+    {"column_name": "id", "data_type": "integer", "is_nullable": "NO", "column_default": "nextval('users_id_seq')"},
+    {"column_name": "email", "data_type": "character varying", "is_nullable": "NO", "column_default": "null"},
+    {"column_name": "created_at", "data_type": "timestamp without time zone", "is_nullable": "YES", "column_default": "now()"}
+  ]
+  ```
+
 ## Diagnostics
 
 ```bash
