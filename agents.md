@@ -19,3 +19,7 @@ This repository follows strict guidelines for AI agents and coding assistants co
 ### 3. Dependency Constraints
 * Avoid introducing heavy or unnecessary external dependencies. Prefer Go standard library packages or lightweight, well-established libraries.
 * Maintain the performance and minimal footprint of this server.
+
+### 4. Git & Commit Rule
+* **Do not perform automatic commits or tag operations.**
+* AI agents must never stage, commit, or create Git tags unless explicitly requested by the user. By default, Git actions should be left to the user to perform manually.
