@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestExtractTableNames(t *testing.T) {
@@ -821,5 +825,126 @@ func TestAddLimitIfMissing(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type mockDBClient struct {
+	executeReadOnlyQueryFunc func(ctx context.Context, query string) ([]map[string]any, error)
+}
+
+func (m *mockDBClient) ListTables(ctx context.Context, schema string) ([]string, error) { return nil, nil }
+func (m *mockDBClient) ListSchemas(ctx context.Context) ([]string, error) { return nil, nil }
+func (m *mockDBClient) ListViews(ctx context.Context, schema string) ([]string, error) { return nil, nil }
+func (m *mockDBClient) ListIndexes(ctx context.Context, schema, table string) ([]IndexInfo, error) { return nil, nil }
+func (m *mockDBClient) FindColumns(ctx context.Context, schema, search string, limit int) ([]ColumnMatch, error) { return nil, nil }
+func (m *mockDBClient) ListRelationships(ctx context.Context, schema, table string) ([]RelationshipInfo, error) { return nil, nil }
+func (m *mockDBClient) DescribeTable(ctx context.Context, schema, table string) ([]ColumnInfo, error) { return nil, nil }
+func (m *mockDBClient) ExecuteQuery(ctx context.Context, query string) ([]map[string]any, error) { return nil, nil }
+func (m *mockDBClient) ExecuteReadOnlyQuery(ctx context.Context, query string) ([]map[string]any, error) {
+	if m.executeReadOnlyQueryFunc != nil {
+		return m.executeReadOnlyQueryFunc(ctx, query)
+	}
+	return nil, nil
+}
+func (m *mockDBClient) ExecuteWrite(ctx context.Context, query string) (int64, error) { return 0, nil }
+func (m *mockDBClient) Close() error { return nil }
+
+func TestDoctorHandler(t *testing.T) {
+	originalState := appState
+	originalConfigs := globalDBConfigs
+	defer func() {
+		appState = originalState
+		globalDBConfigs = originalConfigs
+	}()
+
+	globalDBConfigs = map[string]DBConfig{
+		"db1": {
+			Type:     "postgres",
+			Host:     "localhost",
+			Port:     "5432",
+			User:     "postgres",
+			Password: "secret-password",
+			Name:     "postgres_db",
+			SSLMode:  "disable",
+		},
+		"db2": {
+			Type:     "mysql",
+			Host:     "localhost",
+			Port:     "3306",
+			User:     "root",
+			Password: "",
+			Name:     "mysql_db",
+		},
+	}
+
+	appState = NewServerState()
+
+	appState.AddClient("db1", &mockDBClient{
+		executeReadOnlyQueryFunc: func(ctx context.Context, query string) ([]map[string]any, error) {
+			if query == "SELECT 1" {
+				return []map[string]any{{"1": 1}}, nil
+			}
+			return nil, fmt.Errorf("unexpected query: %s", query)
+		},
+	})
+
+	appState.AddConnectionError("db2", fmt.Errorf("connection refused"))
+
+	ctx := context.Background()
+	result, payload, err := DoctorHandler(ctx, nil, DoctorArgs{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if payload != nil {
+		t.Fatalf("expected payload to be nil, got %v", payload)
+	}
+
+	if len(result.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(result.Content))
+	}
+	textBlock, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent type, got %T", result.Content[0])
+	}
+
+	var output map[string]any
+	if err := json.Unmarshal([]byte(textBlock.Text), &output); err != nil {
+		t.Fatalf("failed to unmarshal doctor tool output: %v", err)
+	}
+
+	if output["status"] != "FAIL" {
+		t.Errorf("expected status 'FAIL', got %v", output["status"])
+	}
+	databases, ok := output["databases"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected databases map in output, got %T", output["databases"])
+	}
+
+	db1, ok := databases["db1"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing db1 in output")
+	}
+	if db1["status"] != "connected" {
+		t.Errorf("expected db1 status 'connected', got %v", db1["status"])
+	}
+	if db1["connection_test"] != "OK" {
+		t.Errorf("expected db1 connection_test 'OK', got %v", db1["connection_test"])
+	}
+	if db1["password"] != "****" {
+		t.Errorf("expected db1 password to be masked, got %v", db1["password"])
+	}
+
+	db2, ok := databases["db2"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing db2 in output")
+	}
+	if db2["status"] != "offline" {
+		t.Errorf("expected db2 status 'offline', got %v", db2["status"])
+	}
+	if !strings.Contains(db2["connection_test"].(string), "connection refused") {
+		t.Errorf("expected db2 connection_test to contain 'connection refused', got %v", db2["connection_test"])
+	}
+	if db2["password"] != "(empty)" {
+		t.Errorf("expected db2 password to be '(empty)', got %v", db2["password"])
 	}
 }

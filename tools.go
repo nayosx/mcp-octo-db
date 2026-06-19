@@ -1376,7 +1376,7 @@ func ServerInfoHandler(ctx context.Context, req *mcp.CallToolRequest, args Serve
 	payload := map[string]any{
 		"name":     "octo-db",
 		"version":  version,
-		"settings": EffectiveConfig(nil)["settings"],
+		"settings": EffectiveConfig(globalDBConfigs)["settings"],
 		"capabilities": map[string]any{
 			"enabled_tools":       enabledToolNames(),
 			"available_databases": appState.AvailableDatabases(),
@@ -1747,4 +1747,114 @@ func SuggestQueryPlanHandler(ctx context.Context, req *mcp.CallToolRequest, args
 		"suggested_filters":        suggestedFilters,
 		"recommended_next_step":    nextSteps,
 	}), nil, nil
+}
+
+type DoctorArgs struct{}
+
+type DoctorDBStatus struct {
+	Type           string `json:"type"`
+	Host           string `json:"host"`
+	Port           string `json:"port"`
+	User           string `json:"user"`
+	Name           string `json:"name"`
+	Password       string `json:"password"`
+	SSLMode        string `json:"sslmode"`
+	Status         string `json:"status"`
+	ConnectionTest string `json:"connection_test"`
+}
+
+func DoctorHandler(ctx context.Context, req *mcp.CallToolRequest, args DoctorArgs) (*mcp.CallToolResult, any, error) {
+	_ = req
+	startTime := time.Now()
+	requestID := nextRequestID()
+
+	effective := EffectiveConfig(globalDBConfigs)
+	databasesRaw, ok := effective["databases"].(map[string]map[string]any)
+	if !ok {
+		databasesRaw = make(map[string]map[string]any)
+	}
+
+	dbStatuses := make(map[string]DoctorDBStatus)
+	allPassed := true
+
+	if len(globalDBConfigs) == 0 {
+		payload := map[string]any{
+			"status":          "FAIL",
+			"message":         "No databases configured. Please check your config.yaml or .env file.",
+			"global_settings": effective["settings"],
+			"databases":       dbStatuses,
+		}
+		logToolCall(requestID, "doctor", args, time.Since(startTime), fmt.Errorf("no databases configured"), 0, false)
+		return jsonResult(payload), nil, nil
+	}
+
+	for dbName, cfgRaw := range databasesRaw {
+		status := "connected"
+		connTest := "OK"
+
+		if connErr, ok := appState.dbConnErrors[strings.ToLower(dbName)]; ok {
+			status = "offline"
+			connTest = fmt.Sprintf("FAIL: connection failed at startup: %v", connErr)
+			allPassed = false
+		} else {
+			client, err := getClient(dbName)
+			if err != nil {
+				status = "offline"
+				connTest = fmt.Sprintf("FAIL: %v", err)
+				allPassed = false
+			} else {
+				timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(GlobalSettings.QueryTimeoutSeconds)*time.Second)
+				_, err = client.ExecuteReadOnlyQuery(timeoutCtx, "SELECT 1")
+				cancel()
+				if err != nil {
+					status = "offline"
+					connTest = fmt.Sprintf("FAIL: live connection check failed: %v", err)
+					allPassed = false
+				}
+			}
+		}
+
+		dbStatuses[dbName] = DoctorDBStatus{
+			Type:           getString(cfgRaw["type"]),
+			Host:           getString(cfgRaw["host"]),
+			Port:           getString(cfgRaw["port"]),
+			User:           getString(cfgRaw["user"]),
+			Name:           getString(cfgRaw["name"]),
+			Password:       getString(cfgRaw["password"]),
+			SSLMode:        getString(cfgRaw["sslmode"]),
+			Status:         status,
+			ConnectionTest: connTest,
+		}
+	}
+
+	overallStatus := "SUCCESS"
+	var message string
+	if allPassed {
+		message = "All databases connected successfully!"
+	} else {
+		overallStatus = "FAIL"
+		message = "One or more database connections failed."
+	}
+
+	payload := map[string]any{
+		"status":          overallStatus,
+		"message":         message,
+		"global_settings": effective["settings"],
+		"databases":       dbStatuses,
+	}
+
+	var errResult error
+	if !allPassed {
+		errResult = fmt.Errorf("one or more databases offline")
+	}
+
+	logToolCall(requestID, "doctor", args, time.Since(startTime), errResult, len(dbStatuses), false)
+	return jsonResult(payload), nil, nil
+}
+
+func getString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }

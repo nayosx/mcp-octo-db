@@ -11,7 +11,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const version = "1.4.5"
+const version = "1.4.6"
+
+var globalDBConfigs map[string]DBConfig
 
 func main() {
 	// Configurar el log para escribir a stderr (crítico para que no ensucie stdout, usado por el protocolo MCP)
@@ -54,6 +56,8 @@ func main() {
 		}
 		log.Fatalf("Error loading configuration: %v\n", err)
 	}
+
+	globalDBConfigs = dbConfigs
 
 	if *printEffectiveConfig {
 		output, err := json.MarshalIndent(EffectiveConfig(dbConfigs), "", "  ")
@@ -200,6 +204,11 @@ func registerTools(server *mcp.Server) {
 		Name:        "suggest_query_plan",
 		Description: "Turn a non-technical reporting question into candidate tables, columns, joins, and filters without executing SQL.",
 	}, SuggestQueryPlanHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "doctor",
+		Description: "Run configuration validation and test connections to all configured databases (equivalent to the CLI 'doctor' command).",
+	}, DoctorHandler)
 }
 
 func enabledToolNames() []string {
@@ -217,6 +226,7 @@ func enabledToolNames() []string {
 		"list_relationships",
 		"explain_query",
 		"suggest_query_plan",
+		"doctor",
 	}
 	if GlobalSettings.EnableWrite {
 		tools = append(tools, "write_query")

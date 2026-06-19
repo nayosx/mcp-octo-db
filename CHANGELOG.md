@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.4.6
+
+- Added a new `doctor` MCP tool to allow calling agents to run diagnostics and connection testing for configured databases.
+- Updated settings reporting in the `server_info` tool to show masked database details via global configurations.
+
 ## v1.4.5
 
 - Added interactive onboarding helper subcommand `setup` to generate local `.env` configurations.
